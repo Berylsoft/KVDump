@@ -1,0 +1,26 @@
+[package]
+name = "kvdump"
+version = "0.1.0"
+edition = "2021"
+authors = ["stackinspector"]
+license = "Apache-2.0"
+repository = "https://github.com/Berylsoft/kvdump"
+description = "A straightforward and compact key-value or zone-key-value binary file format for Berylsoft projects."
+readme = "README.md"
+
+[lib]
+name = "kvdump"
+path = "lib.rs"
+
+[[example]]
+name = "kvdump-writer-example"
+path = "writer-example.rs"
+
+[[example]]
+name = "kvdump-reader-example"
+path = "reader-example.rs"
+
+[dependencies]
+
+[dev-dependencies]
+hex-literal = "0.3"
