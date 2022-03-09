@@ -47,38 +47,6 @@ const SIZED_FLAG_SCOPE: u8 = 1 << 0;
 const SIZED_FLAG_KEY: u8 = 1 << 1;
 const SIZED_FLAG_VALUE: u8 = 1 << 2;
 
-struct SizedFlags {
-    pub scope: bool,
-    pub key: bool,
-    pub value: bool,
-}
-
-impl SizedFlags {
-    pub fn encode(&self) -> u8 {
-        let mut n = 0;
-        if self.scope { n |= SIZED_FLAG_SCOPE }
-        if self.key { n |= SIZED_FLAG_KEY }
-        if self.value { n |= SIZED_FLAG_VALUE }
-        n
-    }
-
-    pub fn decode(n: u8) -> SizedFlags {
-        SizedFlags {
-            scope: (n & SIZED_FLAG_SCOPE) != 0,
-            key: (n & SIZED_FLAG_KEY) != 0,
-            value: (n & SIZED_FLAG_VALUE) != 0,
-        }
-    }
-
-    pub fn from_lengths(len: &Lengths) -> SizedFlags {
-        SizedFlags {
-            scope: len.scope.is_some(),
-            key: len.key.is_some(),
-            value: len.value.is_some(),
-        }
-    }
-}
-
 #[derive(PartialEq, Eq, Debug, Clone)]
 pub struct KV {
     pub scope: Vec<u8>,
@@ -91,6 +59,16 @@ pub struct Lengths {
     pub scope: Option<u32>,
     pub key: Option<u32>,
     pub value: Option<u32>,
+}
+
+impl Lengths {
+    fn flag(&self) -> u8 {
+        let mut flag = 0;
+        if self.scope.is_some() { flag |= SIZED_FLAG_SCOPE }
+        if self.key.is_some() { flag |= SIZED_FLAG_KEY }
+        if self.value.is_some() { flag |= SIZED_FLAG_VALUE }
+        flag
+    }
 }
 
 #[derive(PartialEq, Eq, Debug, Clone)]
@@ -164,7 +142,7 @@ impl<F: Read + Write + Seek + Sized> Writer<F> {
         self.write_u32(into!(self.config.ident.len()))?;
         self.write_bytes(self.config.ident.clone())?;
 
-        self.write_u8(SizedFlags::from_lengths(&self.config.len).encode())?;
+        self.write_u8(self.config.len.flag())?;
         macro_rules! write_init_kvf_impl {
             ($x:ident) => {
                 self.write_u32(self.config.len.$x.unwrap_or(0))?;
@@ -184,15 +162,15 @@ impl<F: Read + Write + Seek + Sized> Writer<F> {
         let ident_len = into!(self.read_u32()?.unwrap());
         let ident = self.read_bytes(ident_len)?.unwrap();
 
-        let sized_flags = SizedFlags::decode(self.read_u8()?.unwrap());
+        let sized_flags = self.read_u8()?.unwrap();
         macro_rules! read_init_kvf_impl {
-            ($x:ident) => {
-                let $x = then_some(sized_flags.$x, self.read_u32()?.unwrap());
+            ($x:ident, $flag:expr) => {
+                let $x = then_some((sized_flags & $flag) != 0, self.read_u32()?.unwrap());
             }
         }
-        read_init_kvf_impl!(scope);
-        read_init_kvf_impl!(key);
-        read_init_kvf_impl!(value);
+        read_init_kvf_impl!(scope, SIZED_FLAG_SCOPE);
+        read_init_kvf_impl!(key, SIZED_FLAG_KEY);
+        read_init_kvf_impl!(value, SIZED_FLAG_VALUE);
         let len = Lengths { scope, key, value };
 
         Ok(Config { ident, len })
