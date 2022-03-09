@@ -85,7 +85,7 @@ impl<W: Write> WriteHelper for W {
         self.write(bytes.as_ref())?;
         Ok(())
     }
-    
+
     #[inline]
     fn write_u32(&mut self, val: u32) -> io::Result<()> {
         write_num_impl!(self, u32, val)
@@ -156,7 +156,7 @@ impl<F: Read + Write + Seek + Sized> Writer<F> {
         macro_rules! write_init_kvf_impl {
             ($x:ident) => {
                 self.inner.write_u32(self.config.len.$x.unwrap_or(0))?;
-            }
+            };
         }
         write_init_kvf_impl!(scope);
         write_init_kvf_impl!(key);
@@ -176,7 +176,7 @@ impl<F: Read + Write + Seek + Sized> Writer<F> {
         macro_rules! read_init_kvf_impl {
             ($x:ident, $flag:expr) => {
                 let $x = then_some((sized_flags & $flag) != 0, self.inner.read_u32()?.unwrap());
-            }
+            };
         }
         read_init_kvf_impl!(scope, SIZED_FLAG_SCOPE);
         read_init_kvf_impl!(key, SIZED_FLAG_KEY);
@@ -198,7 +198,7 @@ impl<F: Read + Write + Seek + Sized> Writer<F> {
                 }
                 self.hasher.update(&kv.$x);
                 self.inner.write_bytes(kv.$x)?;
-            }}
+            }};
         }
         write_kvf_impl!(scope);
         write_kvf_impl!(key);
@@ -231,7 +231,7 @@ impl<F: Read + Write + Seek + Sized> Writer<F> {
 
     pub fn write_end(mut self) -> io::Result<Vec<u8>> {
         self.inner.write_u8(COL_END)?;
-        
+
         let hash = self.hasher.finalize();
         self.inner.write_bytes(hash.as_bytes())?;
 
@@ -240,7 +240,7 @@ impl<F: Read + Write + Seek + Sized> Writer<F> {
 
     pub fn read_end(&mut self) -> io::Result<Vec<u8>> {
         assert_eq!(self.inner.read_u8()?.unwrap(), COL_END);
-        
+
         let read_hash = self.inner.read_bytes(HASH_LEN)?.unwrap();
         let calc_hash = self.hasher.finalize();
         assert_eq!(read_hash.as_slice(), calc_hash.as_bytes());
