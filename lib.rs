@@ -1,6 +1,7 @@
 pub const BS_IDENT: u32 = 0x42650000;
 
 use std::io::{self, Read, Write, Seek};
+use blake3::{Hasher, OUT_LEN as HASH_LEN};
 
 pub type ReadResult<T> = io::Result<Result<T, Vec<u8>>>;
 
@@ -40,13 +41,13 @@ macro_rules! write_num_impl {
 }
 
 const COL_KV: u8 = 0;
-// const COL_END: u8 = 1;
+const COL_END: u8 = 1;
 
 const SIZED_FLAG_SCOPE: u8 = 1 << 0;
 const SIZED_FLAG_KEY: u8 = 1 << 1;
 const SIZED_FLAG_VALUE: u8 = 1 << 2;
 
-pub struct SizedFlags {
+struct SizedFlags {
     pub scope: bool,
     pub key: bool,
     pub value: bool,
@@ -78,18 +79,21 @@ impl SizedFlags {
     }
 }
 
+#[derive(PartialEq, Eq, Debug, Clone)]
 pub struct KV {
-    scope: Vec<u8>,
-    key: Vec<u8>,
-    value: Vec<u8>,
+    pub scope: Vec<u8>,
+    pub key: Vec<u8>,
+    pub value: Vec<u8>,
 }
 
+#[derive(PartialEq, Eq, Debug, Clone)]
 pub struct Lengths {
     pub scope: Option<u32>,
     pub key: Option<u32>,
     pub value: Option<u32>,
 }
 
+#[derive(PartialEq, Eq, Debug, Clone)]
 pub struct Config {
     pub ident: Vec<u8>,
     pub len: Lengths,
@@ -98,6 +102,7 @@ pub struct Config {
 pub struct Writer<F: Read + Write + Seek + Sized> {
     inner: F,
     config: Config,
+    hasher: Hasher,
 }
 
 impl<F: Read + Write + Seek + Sized> Writer<F> {
@@ -153,7 +158,7 @@ impl<F: Read + Write + Seek + Sized> Writer<F> {
         Ok(())
     }
 
-    fn write_init(&mut self) -> io::Result<()> {
+    pub fn write_init(&mut self) -> io::Result<()> {
         self.write_u32(BS_IDENT)?;
 
         self.write_u32(into!(self.config.ident.len()))?;
@@ -203,6 +208,7 @@ impl<F: Read + Write + Seek + Sized> Writer<F> {
                     Some(len) => assert_eq!(len, input_len),
                     None => self.write_u32(input_len)?,
                 }
+                self.hasher.update(&kv.$x);
                 self.write_bytes(kv.$x)?;
             }}
         }
@@ -218,11 +224,12 @@ impl<F: Read + Write + Seek + Sized> Writer<F> {
 
         macro_rules! read_kvf_impl {
             ($x:ident) => {
-                let len = match self.config.len.$x {
+                let len = into!(match self.config.len.$x {
                     Some(len) => len,
                     None => self.read_u32()?.unwrap(),
-                };
-                let $x = self.read_bytes(into!(len))?.unwrap();
+                });
+                let $x = self.read_bytes(len)?.unwrap();
+                self.hasher.update(&$x);
             };
         }
         read_kvf_impl!(scope);
@@ -232,9 +239,29 @@ impl<F: Read + Write + Seek + Sized> Writer<F> {
         Ok(KV { scope, key, value })
     }
 
+    pub fn write_end(mut self) -> io::Result<Vec<u8>> {
+        self.write_u8(COL_END)?;
+        
+        let hash = self.hasher.finalize();
+        self.write_bytes(hash.as_bytes())?;
+
+        Ok(hash.as_bytes().to_vec())
+    }
+
+    pub fn read_end(&mut self) -> io::Result<Vec<u8>> {
+        assert_eq!(self.read_u8()?.unwrap(), COL_END);
+        
+        let read_hash = self.read_bytes(HASH_LEN)?.unwrap();
+        let calc_hash = self.hasher.finalize();
+        assert_eq!(read_hash.as_slice(), calc_hash.as_bytes());
+
+        Ok(read_hash)
+    }
+
     pub fn new(inner: F, config: Config) -> io::Result<Writer<F>> {
-        let mut _self = Writer { inner, config };
-        _self.write_init()?;
+        let hasher = Hasher::new();
+        let mut _self = Writer { inner, config, hasher };
+        // _self.write_init()?;
         Ok(_self)
     }
 }

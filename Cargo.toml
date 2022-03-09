@@ -13,3 +13,4 @@ name = "kvdump"
 path = "lib.rs"
 
 [dependencies]
+blake3 = "*"
