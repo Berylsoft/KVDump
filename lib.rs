@@ -19,7 +19,9 @@ pub enum Error {
     Io(io::Error),
     VersionNotMatch { existing: u32 },
     ConfigNotMatch { existing: Config, current: Config },
-    UnexpectedEnd { buffer: Vec<u8>, expected_length: usize, actual_length: usize },
+    HashNotMatch { read_hash: Vec<u8>, calc_hash: Vec<u8> },
+    InputLengthNotMatch { config_len: u32, input_len: u32, which: String },
+    UnexpectedEnd { buffer: Vec<u8>, expected_len: usize, actual_len: usize },
 }
 
 impl From<io::Error> for Error {
@@ -34,14 +36,14 @@ macro_rules! read_num_impl {
     ($self:expr, $type:ty, $len:expr) => {{
         const LEN_NUM: usize = $len;
         let mut buf = [0u8; LEN_NUM];
-        let actual_length = $self.read(&mut buf)?;
-        if actual_length == LEN_NUM {
+        let actual_len = $self.read(&mut buf)?;
+        if actual_len == LEN_NUM {
             Ok(<$type>::from_be_bytes(buf))
         } else {
             Err(Error::UnexpectedEnd {
                 buffer: buf.to_vec(),
-                expected_length: LEN_NUM,
-                actual_length,
+                expected_len: LEN_NUM,
+                actual_len,
             })
         }
     }};
@@ -57,14 +59,14 @@ impl<R: Read> ReadHelper for R {
     #[inline]
     fn read_bytes(&mut self, len: usize) -> Result<Vec<u8>> {
         let mut buf = vec![0u8; len];
-        let actual_length = self.read(&mut buf)?;
-        if actual_length == len {
+        let actual_len = self.read(&mut buf)?;
+        if actual_len == len {
             Ok(buf)
         } else {
             Err(Error::UnexpectedEnd {
                 buffer: buf.to_vec(),
-                expected_length: len,
-                actual_length,
+                expected_len: len,
+                actual_len,
             })
         }
     }
@@ -155,8 +157,16 @@ pub struct Reader<F: Read + Seek + Sized> {
 }
 
 impl<F: Read + Seek + Sized> Reader<F> {
+    #[inline]
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
+
     pub fn read_init(inner: &mut F) -> Result<Config> {
-        assert_eq!(inner.read_u32()?, BS_IDENT);
+        let version = inner.read_u32()?;
+        if version != BS_IDENT {
+            return Err(Error::VersionNotMatch { existing: version });
+        }
 
         let ident_len = into!(inner.read_u32()?);
         let ident = inner.read_bytes(ident_len)?;
@@ -200,7 +210,12 @@ impl<F: Read + Seek + Sized> Reader<F> {
 
         let read_hash = self.inner.read_bytes(HASH_LEN)?;
         let calc_hash = self.hasher.finalize();
-        assert_eq!(read_hash.as_slice(), calc_hash.as_bytes());
+        if read_hash.as_slice() != calc_hash.as_bytes() {
+            return Err(Error::HashNotMatch {
+                read_hash,
+                calc_hash: calc_hash.as_bytes().to_vec(),
+            });
+        }
         self.hasher.reset();
 
         Ok(read_hash)
@@ -252,7 +267,15 @@ impl<F: Read + Write + Seek + Sized> Writer<F> {
             ($x:ident) => {{
                 let input_len = into!(kv.$x.len());
                 match self.config.len.$x {
-                    Some(len) => assert_eq!(len, input_len),
+                    Some(config_len) => {
+                        if config_len != input_len {
+                            return Err(Error::InputLengthNotMatch {
+                                config_len,
+                                input_len,
+                                which: stringify!($x).to_owned(),
+                            });
+                        }
+                    },
                     None => self.inner.write_u32(input_len)?,
                 }
                 self.hasher.update(&kv.$x);
