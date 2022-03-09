@@ -3,8 +3,6 @@ pub const BS_IDENT: u32 = 0x42650000;
 use std::io::{self, Read, Write, Seek};
 use blake3::{Hasher, OUT_LEN as HASH_LEN};
 
-pub type ReadResult<T> = io::Result<Result<T, Vec<u8>>>;
-
 macro_rules! into {
     ($val:expr) => {
         $val.try_into().unwrap()
@@ -16,11 +14,13 @@ fn then_some<T>(b: bool, t: T) -> Option<T> {
     if b { Some(t) } else { None }
 }
 
+pub type ReadResult<T> = io::Result<Result<T, Vec<u8>>>;
+
 macro_rules! read_num_impl {
     ($self:expr, $type:ty, $len:expr) => {{
         const LEN_NUM: usize = $len;
         let mut buf = [0u8; LEN_NUM];
-        match $self.inner.read(&mut buf) {
+        match $self.read(&mut buf) {
             Ok(acc_len) => Ok({
                 if acc_len == LEN_NUM {
                     Ok(<$type>::from_be_bytes(buf))
@@ -33,11 +33,68 @@ macro_rules! read_num_impl {
     }};
 }
 
+trait ReadHelper: Read {
+    fn read_bytes(&mut self, len: usize) -> ReadResult<Vec<u8>>;
+    fn read_u32(&mut self) -> ReadResult<u32>;
+    fn read_u8(&mut self) -> ReadResult<u8>;
+}
+
+impl<R: Read> ReadHelper for R {
+    #[inline]
+    fn read_bytes(&mut self, len: usize) -> ReadResult<Vec<u8>> {
+        let mut buf = vec![0u8; len];
+        match self.read(&mut buf) {
+            Ok(acc_len) => Ok({
+                if acc_len == len {
+                    Ok(buf)
+                } else {
+                    Err(buf)
+                }
+            }),
+            Err(error) => Err(error),
+        }
+    }
+
+    #[inline]
+    fn read_u32(&mut self) -> ReadResult<u32> {
+        read_num_impl!(self, u32, 4)
+    }
+
+    #[inline]
+    fn read_u8(&mut self) -> ReadResult<u8> {
+        read_num_impl!(self, u8, 1)
+    }
+}
+
 macro_rules! write_num_impl {
     ($self:expr, $type:ty, $val:expr) => {{
-        $self.inner.write(<$type>::to_be_bytes($val).as_ref())?;
+        $self.write(<$type>::to_be_bytes($val).as_ref())?;
         Ok(())
     }};
+}
+
+trait WriteHelper: Write {
+    fn write_bytes<B: AsRef<[u8]>>(&mut self, bytes: B) -> io::Result<()>;
+    fn write_u32(&mut self, val: u32) -> io::Result<()>;
+    fn write_u8(&mut self, val: u8) -> io::Result<()>;
+}
+
+impl<W: Write> WriteHelper for W {
+    #[inline]
+    fn write_bytes<B: AsRef<[u8]>>(&mut self, bytes: B) -> io::Result<()> {
+        self.write(bytes.as_ref())?;
+        Ok(())
+    }
+    
+    #[inline]
+    fn write_u32(&mut self, val: u32) -> io::Result<()> {
+        write_num_impl!(self, u32, val)
+    }
+
+    #[inline]
+    fn write_u8(&mut self, val: u8) -> io::Result<()> {
+        write_num_impl!(self, u8, val)
+    }
 }
 
 const COL_KV: u8 = 0;
@@ -85,87 +142,40 @@ pub struct Writer<F: Read + Write + Seek + Sized> {
 
 impl<F: Read + Write + Seek + Sized> Writer<F> {
     #[inline]
-    fn read_bytes(&mut self, len: usize) -> ReadResult<Vec<u8>> {
-        let mut buf = vec![0u8; len];
-        match self.inner.read(&mut buf) {
-            Ok(acc_len) => Ok({
-                if acc_len == len {
-                    Ok(buf)
-                } else {
-                    Err(buf)
-                }
-            }),
-            Err(error) => Err(error),
-        }
-    }
-
-    #[inline]
-    fn read_u32(&mut self) -> ReadResult<u32> {
-        read_num_impl!(self, u32, 4)
-    }
-
-    #[inline]
-    fn read_u8(&mut self) -> ReadResult<u8> {
-        read_num_impl!(self, u8, 1)
-    }
-
-    #[inline]
-    fn write_bytes<B: AsRef<[u8]>>(&mut self, bytes: B) -> io::Result<()> {
-        self.inner.write(bytes.as_ref())?;
-        Ok(())
-    }
-    
-    #[inline]
-    fn write_u32(&mut self, val: u32) -> io::Result<()> {
-        write_num_impl!(self, u32, val)
-    }
-
-    #[inline]
-    fn write_u8(&mut self, val: u8) -> io::Result<()> {
-        write_num_impl!(self, u8, val)
-    }
-
-    #[inline]
     pub fn config(&self) -> &Config {
         &self.config
     }
 
-    #[inline]
-    pub fn flush(&mut self) -> io::Result<()> {
-        self.inner.flush()?;
-        Ok(())
-    }
-
     pub fn write_init(&mut self) -> io::Result<()> {
-        self.write_u32(BS_IDENT)?;
+        self.inner.write_u32(BS_IDENT)?;
 
-        self.write_u32(into!(self.config.ident.len()))?;
-        self.write_bytes(self.config.ident.clone())?;
+        self.inner.write_u32(into!(self.config.ident.len()))?;
+        self.inner.write_bytes(self.config.ident.clone())?;
 
-        self.write_u8(self.config.len.flag())?;
+        self.inner.write_u8(self.config.len.flag())?;
         macro_rules! write_init_kvf_impl {
             ($x:ident) => {
-                self.write_u32(self.config.len.$x.unwrap_or(0))?;
+                self.inner.write_u32(self.config.len.$x.unwrap_or(0))?;
             }
         }
         write_init_kvf_impl!(scope);
         write_init_kvf_impl!(key);
         write_init_kvf_impl!(value);
 
-        self.flush()?;
+        self.inner.flush()?;
         Ok(())
     }
 
     pub fn read_init(&mut self) -> io::Result<Config> {
-        assert_eq!(self.read_u32()?.unwrap(), BS_IDENT);
+        assert_eq!(self.inner.read_u32()?.unwrap(), BS_IDENT);
 
-        let ident_len = into!(self.read_u32()?.unwrap());
-        let ident = self.read_bytes(ident_len)?.unwrap();
+        let ident_len = into!(self.inner.read_u32()?.unwrap());
+        let ident = self.inner.read_bytes(ident_len)?.unwrap();
 
-        let sized_flags = self.read_u8()?.unwrap();
+        let sized_flags = self.inner.read_u8()?.unwrap();
         macro_rules! read_init_kvf_impl {
             ($x:ident, $flag:expr) => {
-                let $x = then_some((sized_flags & $flag) != 0, self.read_u32()?.unwrap());
+                let $x = then_some((sized_flags & $flag) != 0, self.inner.read_u32()?.unwrap());
             }
         }
         read_init_kvf_impl!(scope, SIZED_FLAG_SCOPE);
@@ -177,36 +187,38 @@ impl<F: Read + Write + Seek + Sized> Writer<F> {
     }
 
     pub fn write_kv(&mut self, kv: KV) -> io::Result<()> {
-        self.write_u8(COL_KV)?;
+        self.inner.write_u8(COL_KV)?;
 
         macro_rules! write_kvf_impl {
             ($x:ident) => {{
                 let input_len = into!(kv.$x.len());
                 match self.config.len.$x {
                     Some(len) => assert_eq!(len, input_len),
-                    None => self.write_u32(input_len)?,
+                    None => self.inner.write_u32(input_len)?,
                 }
                 self.hasher.update(&kv.$x);
-                self.write_bytes(kv.$x)?;
+                self.inner.write_bytes(kv.$x)?;
             }}
         }
         write_kvf_impl!(scope);
         write_kvf_impl!(key);
         write_kvf_impl!(value);
 
+        // TODO may too frequent
+        self.inner.flush()?;
         Ok(())
     }
 
     pub fn read_kv(&mut self) -> io::Result<KV> {
-        assert_eq!(self.read_u8()?.unwrap(), COL_KV);
+        assert_eq!(self.inner.read_u8()?.unwrap(), COL_KV);
 
         macro_rules! read_kvf_impl {
             ($x:ident) => {
                 let len = into!(match self.config.len.$x {
                     Some(len) => len,
-                    None => self.read_u32()?.unwrap(),
+                    None => self.inner.read_u32()?.unwrap(),
                 });
-                let $x = self.read_bytes(len)?.unwrap();
+                let $x = self.inner.read_bytes(len)?.unwrap();
                 self.hasher.update(&$x);
             };
         }
@@ -218,18 +230,18 @@ impl<F: Read + Write + Seek + Sized> Writer<F> {
     }
 
     pub fn write_end(mut self) -> io::Result<Vec<u8>> {
-        self.write_u8(COL_END)?;
+        self.inner.write_u8(COL_END)?;
         
         let hash = self.hasher.finalize();
-        self.write_bytes(hash.as_bytes())?;
+        self.inner.write_bytes(hash.as_bytes())?;
 
         Ok(hash.as_bytes().to_vec())
     }
 
     pub fn read_end(&mut self) -> io::Result<Vec<u8>> {
-        assert_eq!(self.read_u8()?.unwrap(), COL_END);
+        assert_eq!(self.inner.read_u8()?.unwrap(), COL_END);
         
-        let read_hash = self.read_bytes(HASH_LEN)?.unwrap();
+        let read_hash = self.inner.read_bytes(HASH_LEN)?.unwrap();
         let calc_hash = self.hasher.finalize();
         assert_eq!(read_hash.as_slice(), calc_hash.as_bytes());
 
