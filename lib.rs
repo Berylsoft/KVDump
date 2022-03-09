@@ -14,54 +14,68 @@ fn then_some<T>(b: bool, t: T) -> Option<T> {
     if b { Some(t) } else { None }
 }
 
-pub type ReadResult<T> = io::Result<Result<T, Vec<u8>>>;
+#[derive(Debug)]
+pub enum Error {
+    Io(io::Error),
+    VersionNotMatch { existing: u32 },
+    ConfigNotMatch { existing: Config, current: Config },
+    UnexpectedEnd { buffer: Vec<u8>, expected_length: usize, actual_length: usize },
+}
+
+impl From<io::Error> for Error {
+    fn from(err: io::Error) -> Error {
+        Error::Io(err)
+    }
+}
+
+pub type Result<T> = std::result::Result<T, Error>;
 
 macro_rules! read_num_impl {
     ($self:expr, $type:ty, $len:expr) => {{
         const LEN_NUM: usize = $len;
         let mut buf = [0u8; LEN_NUM];
-        match $self.read(&mut buf) {
-            Ok(acc_len) => Ok({
-                if acc_len == LEN_NUM {
-                    Ok(<$type>::from_be_bytes(buf))
-                } else {
-                    Err(buf.to_vec())
-                }
-            }),
-            Err(error) => Err(error),
+        let actual_length = $self.read(&mut buf)?;
+        if actual_length == LEN_NUM {
+            Ok(<$type>::from_be_bytes(buf))
+        } else {
+            Err(Error::UnexpectedEnd {
+                buffer: buf.to_vec(),
+                expected_length: LEN_NUM,
+                actual_length,
+            })
         }
     }};
 }
 
 trait ReadHelper: Read {
-    fn read_bytes(&mut self, len: usize) -> ReadResult<Vec<u8>>;
-    fn read_u32(&mut self) -> ReadResult<u32>;
-    fn read_u8(&mut self) -> ReadResult<u8>;
+    fn read_bytes(&mut self, len: usize) -> Result<Vec<u8>>;
+    fn read_u32(&mut self) -> Result<u32>;
+    fn read_u8(&mut self) -> Result<u8>;
 }
 
 impl<R: Read> ReadHelper for R {
     #[inline]
-    fn read_bytes(&mut self, len: usize) -> ReadResult<Vec<u8>> {
+    fn read_bytes(&mut self, len: usize) -> Result<Vec<u8>> {
         let mut buf = vec![0u8; len];
-        match self.read(&mut buf) {
-            Ok(acc_len) => Ok({
-                if acc_len == len {
-                    Ok(buf)
-                } else {
-                    Err(buf)
-                }
-            }),
-            Err(error) => Err(error),
+        let actual_length = self.read(&mut buf)?;
+        if actual_length == len {
+            Ok(buf)
+        } else {
+            Err(Error::UnexpectedEnd {
+                buffer: buf.to_vec(),
+                expected_length: len,
+                actual_length,
+            })
         }
     }
 
     #[inline]
-    fn read_u32(&mut self) -> ReadResult<u32> {
+    fn read_u32(&mut self) -> Result<u32> {
         read_num_impl!(self, u32, 4)
     }
 
     #[inline]
-    fn read_u8(&mut self) -> ReadResult<u8> {
+    fn read_u8(&mut self) -> Result<u8> {
         read_num_impl!(self, u8, 1)
     }
 }
@@ -141,16 +155,16 @@ pub struct Reader<F: Read + Seek + Sized> {
 }
 
 impl<F: Read + Seek + Sized> Reader<F> {
-    pub fn read_init(inner: &mut F) -> io::Result<Config> {
-        assert_eq!(inner.read_u32()?.unwrap(), BS_IDENT);
+    pub fn read_init(inner: &mut F) -> Result<Config> {
+        assert_eq!(inner.read_u32()?, BS_IDENT);
 
-        let ident_len = into!(inner.read_u32()?.unwrap());
-        let ident = inner.read_bytes(ident_len)?.unwrap();
+        let ident_len = into!(inner.read_u32()?);
+        let ident = inner.read_bytes(ident_len)?;
 
-        let sized_flags = inner.read_u8()?.unwrap();
+        let sized_flags = inner.read_u8()?;
         macro_rules! read_init_kvf_impl {
             ($x:ident, $flag:expr) => {
-                let $x = then_some((sized_flags & $flag) != 0, inner.read_u32()?.unwrap());
+                let $x = then_some((sized_flags & $flag) != 0, inner.read_u32()?);
             };
         }
         read_init_kvf_impl!(scope, SIZED_FLAG_SCOPE);
@@ -161,16 +175,16 @@ impl<F: Read + Seek + Sized> Reader<F> {
         Ok(Config { ident, len })
     }
 
-    pub fn read_kv(&mut self) -> io::Result<KV> {
-        assert_eq!(self.inner.read_u8()?.unwrap(), COL_KV);
+    pub fn read_kv(&mut self) -> Result<KV> {
+        assert_eq!(self.inner.read_u8()?, COL_KV);
 
         macro_rules! read_kvf_impl {
             ($x:ident) => {
                 let len = into!(match self.config.len.$x {
                     Some(len) => len,
-                    None => self.inner.read_u32()?.unwrap(),
+                    None => self.inner.read_u32()?,
                 });
-                let $x = self.inner.read_bytes(len)?.unwrap();
+                let $x = self.inner.read_bytes(len)?;
                 self.hasher.update(&$x);
             };
         }
@@ -181,17 +195,18 @@ impl<F: Read + Seek + Sized> Reader<F> {
         Ok(KV { scope, key, value })
     }
 
-    pub fn read_end(&mut self) -> io::Result<Vec<u8>> {
-        assert_eq!(self.inner.read_u8()?.unwrap(), COL_END);
+    pub fn read_end(&mut self) -> Result<Vec<u8>> {
+        assert_eq!(self.inner.read_u8()?, COL_END);
 
-        let read_hash = self.inner.read_bytes(HASH_LEN)?.unwrap();
+        let read_hash = self.inner.read_bytes(HASH_LEN)?;
         let calc_hash = self.hasher.finalize();
         assert_eq!(read_hash.as_slice(), calc_hash.as_bytes());
+        self.hasher.reset();
 
         Ok(read_hash)
     }
 
-    pub fn init(mut inner: F) -> io::Result<Reader<F>> {
+    pub fn init(mut inner: F) -> Result<Reader<F>> {
         let config = Reader::read_init(&mut inner)?;
         let hasher = Hasher::new();
         Ok(Reader { inner, config, hasher })
@@ -210,7 +225,7 @@ impl<F: Read + Write + Seek + Sized> Writer<F> {
         &self.config
     }
 
-    pub fn write_init(&mut self) -> io::Result<()> {
+    pub fn write_init(&mut self) -> Result<()> {
         self.inner.write_u32(BS_IDENT)?;
 
         self.inner.write_u32(into!(self.config.ident.len()))?;
@@ -230,7 +245,7 @@ impl<F: Read + Write + Seek + Sized> Writer<F> {
         Ok(())
     }
 
-    pub fn write_kv(&mut self, kv: KV) -> io::Result<()> {
+    pub fn write_kv(&mut self, kv: KV) -> Result<()> {
         self.inner.write_u8(COL_KV)?;
 
         macro_rules! write_kvf_impl {
@@ -253,7 +268,7 @@ impl<F: Read + Write + Seek + Sized> Writer<F> {
         Ok(())
     }
 
-    pub fn write_end(mut self) -> io::Result<Vec<u8>> {
+    pub fn write_end(mut self) -> Result<Vec<u8>> {
         self.inner.write_u8(COL_END)?;
 
         let hash = self.hasher.finalize();
@@ -262,7 +277,7 @@ impl<F: Read + Write + Seek + Sized> Writer<F> {
         Ok(hash.as_bytes().to_vec())
     }
 
-    pub fn init(inner: F, config: Config) -> io::Result<Writer<F>> {
+    pub fn init(inner: F, config: Config) -> Result<Writer<F>> {
         let hasher = Hasher::new();
         let mut _self = Writer { inner, config, hasher };
         // _self.write_init()?;
