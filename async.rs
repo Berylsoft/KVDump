@@ -2,7 +2,13 @@ use std::{fs::OpenOptions, path::Path};
 use tokio::{spawn, sync::mpsc};
 pub use kvdump::*;
 
-type Tx = mpsc::UnboundedSender<KV>;
+#[derive(Debug)]
+enum Message {
+    KV(KV),
+    Close,
+}
+
+type Tx = mpsc::UnboundedSender<Message>;
 
 pub struct AsyncFileWriter {
     tx: Tx,
@@ -15,13 +21,21 @@ pub struct AsyncFileScopeWriter {
 
 impl AsyncFileWriter {
     pub fn init<P: AsRef<Path>>(path: P, config: Config) -> Result<AsyncFileWriter> {
-        let (tx, mut rx) = mpsc::unbounded_channel::<KV>();
+        let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
         let file = OpenOptions::new().write(true).create(true).open(path)?;
         let mut writer = Writer::init(file, config)?;
         spawn(async move {
-            while let Some(kv) = rx.recv().await {
+            while let Some(message) = rx.recv().await {
                 // TODO spread error to upstream
-                writer.write_kv(kv).unwrap();
+                match message {
+                    Message::KV(kv) => {
+                        writer.write_kv(kv).unwrap();
+                    },
+                    Message::Close => {
+                        writer.write_hash().unwrap();
+                        break;
+                    }
+                }
             }
         });
         Ok(AsyncFileWriter { tx })
@@ -31,11 +45,13 @@ impl AsyncFileWriter {
         AsyncFileScopeWriter { scope, tx: self.tx.clone() }
     }
 
-    // TODO impl close()
+    pub fn close(self) {
+        self.tx.send(Message::Close).unwrap();
+    }
 }
 
 impl AsyncFileScopeWriter {
     pub fn write_kv(&self, key: Vec<u8>, value: Vec<u8>) {
-        self.tx.send(KV { scope: self.scope.clone(), key, value }).unwrap();
+        self.tx.send(Message::KV(KV { scope: self.scope.clone(), key, value })).unwrap();
     }
 }
