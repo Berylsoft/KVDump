@@ -19,7 +19,7 @@ pub enum Error {
     Io(io::Error),
     VersionNotMatch { existing: u32 },
     ConfigNotMatch { existing: Config, current: Config },
-    HashNotMatch { read_hash: Vec<u8>, calc_hash: Vec<u8> },
+    HashNotMatch { existing: Vec<u8>, calculated: Vec<u8> },
     InputLengthNotMatch { config_len: u32, input_len: u32, which: String },
     UnexpectedEnd { buffer: Vec<u8>, expected_len: usize, actual_len: usize },
 }
@@ -50,12 +50,6 @@ macro_rules! read_num_impl {
 }
 
 trait ReadHelper: Read {
-    fn read_bytes(&mut self, len: usize) -> Result<Vec<u8>>;
-    fn read_u32(&mut self) -> Result<u32>;
-    fn read_u8(&mut self) -> Result<u8>;
-}
-
-impl<R: Read> ReadHelper for R {
     #[inline]
     fn read_bytes(&mut self, len: usize) -> Result<Vec<u8>> {
         let mut buf = vec![0u8; len];
@@ -82,6 +76,8 @@ impl<R: Read> ReadHelper for R {
     }
 }
 
+impl<R: Read> ReadHelper for R {}
+
 macro_rules! write_num_impl {
     ($self:expr, $type:ty, $val:expr) => {{
         $self.write(<$type>::to_be_bytes($val).as_ref())?;
@@ -90,12 +86,6 @@ macro_rules! write_num_impl {
 }
 
 trait WriteHelper: Write {
-    fn write_bytes<B: AsRef<[u8]>>(&mut self, bytes: B) -> io::Result<()>;
-    fn write_u32(&mut self, val: u32) -> io::Result<()>;
-    fn write_u8(&mut self, val: u8) -> io::Result<()>;
-}
-
-impl<W: Write> WriteHelper for W {
     #[inline]
     fn write_bytes<B: AsRef<[u8]>>(&mut self, bytes: B) -> io::Result<()> {
         self.write(bytes.as_ref())?;
@@ -113,8 +103,10 @@ impl<W: Write> WriteHelper for W {
     }
 }
 
+impl<W: Write> WriteHelper for W {}
+
 const COL_KV: u8 = 0;
-const COL_END: u8 = 1;
+const COL_HASH: u8 = 1;
 
 const SIZED_FLAG_SCOPE: u8 = 1 << 0;
 const SIZED_FLAG_KEY: u8 = 1 << 1;
@@ -205,20 +197,20 @@ impl<F: Read + Seek + Sized> Reader<F> {
         Ok(KV { scope, key, value })
     }
 
-    pub fn read_end(&mut self) -> Result<Vec<u8>> {
-        assert_eq!(self.inner.read_u8()?, COL_END);
+    pub fn read_hash(&mut self) -> Result<Vec<u8>> {
+        assert_eq!(self.inner.read_u8()?, COL_HASH);
 
-        let read_hash = self.inner.read_bytes(HASH_LEN)?;
-        let calc_hash = self.hasher.finalize();
-        if read_hash.as_slice() != calc_hash.as_bytes() {
+        let existing = self.inner.read_bytes(HASH_LEN)?;
+        let calculated = self.hasher.finalize();
+        if existing.as_slice() != calculated.as_bytes() {
             return Err(Error::HashNotMatch {
-                read_hash,
-                calc_hash: calc_hash.as_bytes().to_vec(),
+                existing,
+                calculated: calculated.as_bytes().to_vec(),
             });
         }
         self.hasher.reset();
 
-        Ok(read_hash)
+        Ok(existing)
     }
 
     pub fn init(mut inner: F) -> Result<Reader<F>> {
@@ -291,8 +283,8 @@ impl<F: Read + Write + Seek + Sized> Writer<F> {
         Ok(())
     }
 
-    pub fn write_end(mut self) -> Result<Vec<u8>> {
-        self.inner.write_u8(COL_END)?;
+    pub fn write_hash(&mut self) -> Result<Vec<u8>> {
+        self.inner.write_u8(COL_HASH)?;
 
         let hash = self.hasher.finalize();
         self.inner.write_bytes(hash.as_bytes())?;
@@ -300,10 +292,15 @@ impl<F: Read + Write + Seek + Sized> Writer<F> {
         Ok(hash.as_bytes().to_vec())
     }
 
+    pub fn write_end(mut self) -> Result<()> {
+        self.write_hash()?;
+        Ok(())
+    }
+
     pub fn init(inner: F, config: Config) -> Result<Writer<F>> {
         let hasher = Hasher::new();
         let mut _self = Writer { inner, config, hasher };
-        // _self.write_init()?;
+        _self.write_init()?;
         Ok(_self)
     }
 }
