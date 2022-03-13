@@ -7,7 +7,7 @@ use blake3::{Hasher, OUT_LEN as HASH_LEN};
 
 macro_rules! into {
     ($val:expr) => {
-        $val.try_into().unwrap()
+        $val.try_into().expect("FATAL: Size out of boundary")
     };
 }
 
@@ -147,9 +147,14 @@ pub struct Sizes {
 impl Sizes {
     fn flag(&self) -> u8 {
         let mut flag = 0;
-        if self.scope.is_some() { flag |= SIZES_FLAG_BASES.scope }
-        if self.key.is_some() { flag |= SIZES_FLAG_BASES.key }
-        if self.value.is_some() { flag |= SIZES_FLAG_BASES.value }
+        macro_rules! skv_op_impl {
+            ($($x:ident,)*) => {$(
+                if self.$x.is_some() {
+                    flag |= SIZES_FLAG_BASES.$x;
+                }
+            )*};
+        }
+        skv_op_impl!(scope, key, value,);
         flag
     }
 }
@@ -221,7 +226,7 @@ impl<F: Read> Reader<F> {
         &self.config
     }
 
-    pub fn read_init(inner: &mut F) -> Result<Config> {
+    fn read_init(inner: &mut F) -> Result<Config> {
         let version = inner.read_u32()?;
         if version != BS_IDENT {
             return Err(Error::VersionNotMatch { existing: version });
@@ -231,39 +236,34 @@ impl<F: Read> Reader<F> {
         let ident = inner.read_bytes(ident_len)?;
 
         let sizes_flag = inner.read_u8()?;
-        macro_rules! read_init_kvf_impl {
-            ($x:ident) => {
+        macro_rules! skv_op_impl {
+            ($($x:ident,)*) => {$(
                 let $x = then_some((sizes_flag & SIZES_FLAG_BASES.$x) != 0, inner.read_u32()?);
-            };
+            )*};
         }
-        read_init_kvf_impl!(scope);
-        read_init_kvf_impl!(key);
-        read_init_kvf_impl!(value);
-        let len = Sizes { scope, key, value };
+        skv_op_impl!(scope, key, value,);
+        let sizes = Sizes { scope, key, value };
 
-        Ok(Config { ident, sizes: len })
+        Ok(Config { ident, sizes })
     }
 
     pub fn read(&mut self) -> Result<Row> {
         Ok(match self.inner.read_u8()? {
-            ROW_KV => {
-                macro_rules! read_kvf_impl {
-                    ($x:ident) => {
+            ROW_KV => Row::KV({
+                macro_rules! skv_op_impl {
+                    ($($x:ident,)*) => {$(
                         let len = into!(match self.config.sizes.$x {
                             Some(len) => len,
                             None => self.inner.read_u32()?,
                         });
                         let $x = self.inner.read_bytes(len)?;
                         self.hasher.update(&$x);
-                    };
+                    )*};
                 }
-                read_kvf_impl!(scope);
-                read_kvf_impl!(key);
-                read_kvf_impl!(value);
-
-                Row::KV(KV { scope, key, value })
-            },
-            ROW_HASH => {
+                skv_op_impl!(scope, key, value,);
+                KV { scope, key, value }
+            }),
+            ROW_HASH => Row::Hash({
                 let existing = self.inner.read_hash()?;
                 let calculated = *self.hasher.finalize().as_bytes();
                 if &existing != &calculated {
@@ -273,9 +273,8 @@ impl<F: Read> Reader<F> {
                     });
                 }
                 self.hasher.reset();
-
-                Row::Hash(calculated)
-            },
+                calculated
+            }),
             ROW_END => Row::End,
             row_type => return Err(Error::UnexpectedRowType { row_type }),
         })
@@ -283,8 +282,7 @@ impl<F: Read> Reader<F> {
 
     pub fn init(mut inner: F) -> Result<Reader<F>> {
         let config = Reader::read_init(&mut inner)?;
-        let hasher = Hasher::new();
-        Ok(Reader { inner, config, hasher })
+        Ok(Reader { inner, config, hasher: Hasher::new() })
     }
 }
 
@@ -315,21 +313,19 @@ impl<F: Write> Writer<F> {
         &self.config
     }
 
-    pub fn write_init(&mut self) -> Result<()> {
+    fn write_init(&mut self) -> Result<()> {
         self.inner.write_u32(BS_IDENT)?;
 
         self.inner.write_u32(into!(self.config.ident.len()))?;
         self.inner.write_bytes(self.config.ident.clone())?;
 
         self.inner.write_u8(self.config.sizes.flag())?;
-        macro_rules! write_init_kvf_impl {
-            ($x:ident) => {
+        macro_rules! skv_op_impl {
+            ($($x:ident,)*) => {$(
                 self.inner.write_u32(self.config.sizes.$x.unwrap_or(0))?;
-            };
+            )*};
         }
-        write_init_kvf_impl!(scope);
-        write_init_kvf_impl!(key);
-        write_init_kvf_impl!(value);
+        skv_op_impl!(scope, key, value,);
 
         self.inner.flush()?;
         Ok(())
@@ -340,8 +336,8 @@ impl<F: Write> Writer<F> {
             Request::KV(kv) => {
                 self.inner.write_u8(ROW_KV)?;
 
-                macro_rules! write_kvf_impl {
-                    ($x:ident) => {{
+                macro_rules! skv_op_impl {
+                    ($($x:ident,)*) => {$({
                         let input_len = into!(kv.$x.len());
                         match self.config.sizes.$x {
                             Some(config_len) => {
@@ -357,11 +353,9 @@ impl<F: Write> Writer<F> {
                         }
                         self.hasher.update(&kv.$x);
                         self.inner.write_bytes(kv.$x)?;
-                    }};
+                    })*};
                 }
-                write_kvf_impl!(scope);
-                write_kvf_impl!(key);
-                write_kvf_impl!(value);
+                skv_op_impl!(scope, key, value,);
 
                 // TODO may too frequent
                 self.inner.flush()?;
@@ -386,16 +380,24 @@ impl<F: Write> Writer<F> {
     }
 
     pub fn init(inner: F, config: Config) -> Result<Writer<F>> {
-        let hasher = Hasher::new();
-        let mut _self = Writer { inner, config, hasher };
+        let mut _self = Writer { inner, config, hasher: Hasher::new() };
         _self.write_init()?;
         Ok(_self)
+    }
+
+    pub fn close(&mut self) -> Result<Hash> {
+        let hash = self.write(Request::Hash).map(|res| match res {
+            Response::Hash(hash) => hash,
+            _ => unreachable!(),
+        })?;
+        self.write(Request::End)?;
+        Ok(hash)
     }
 }
 
 impl<F: Write> Drop for Writer<F> {
     fn drop(&mut self) {
-        self.write(Request::End).unwrap();
+        self.close().expect("FATAL: Error occurred during `close()`ing called by `Drop::drop()`");
     }
 }
 
