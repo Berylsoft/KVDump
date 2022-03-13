@@ -126,13 +126,6 @@ pub enum Request {
     End,
 }
 
-#[derive(Debug, Clone)]
-pub enum Response {
-    KV,
-    Hash(Hash),
-    End,
-}
-
 // endregion
 
 // region: config types
@@ -331,8 +324,8 @@ impl<F: Write> Writer<F> {
         Ok(())
     }
 
-    pub fn write(&mut self, req: Request) -> Result<Response> {
-        Ok(match req {
+    pub fn write(&mut self, req: Request) -> Result<()> {
+        match req {
             Request::KV(kv) => {
                 self.inner.write_u8(ROW_KV)?;
 
@@ -356,27 +349,19 @@ impl<F: Write> Writer<F> {
                     })*};
                 }
                 skv_op_impl!(scope, key, value,);
-
-                // TODO may too frequent
-                self.inner.flush()?;
-                Response::KV
             },
             Request::Hash => {
                 self.inner.write_u8(ROW_HASH)?;
 
                 let hash = *self.hasher.finalize().as_bytes();
                 self.inner.write_bytes(&hash)?;
-
-                self.inner.flush()?;
-                Response::Hash(hash)
             },
             Request::End => {
                 self.inner.write_u8(ROW_END)?;
-
-                self.inner.flush()?;
-                Response::End
             },
-        })
+        }
+        self.inner.flush()?;
+        Ok(())
     }
 
     pub fn init(inner: F, config: Config) -> Result<Writer<F>> {
@@ -384,20 +369,12 @@ impl<F: Write> Writer<F> {
         _self.write_init()?;
         Ok(_self)
     }
-
-    pub fn close(&mut self) -> Result<Hash> {
-        let hash = self.write(Request::Hash).map(|res| match res {
-            Response::Hash(hash) => hash,
-            _ => unreachable!(),
-        })?;
-        self.write(Request::End)?;
-        Ok(hash)
-    }
 }
 
 impl<F: Write> Drop for Writer<F> {
     fn drop(&mut self) {
-        self.close().expect("FATAL: Error occurred during `close()`ing called by `Drop::drop()`");
+        self.write(Request::Hash).expect("FATAL: Error occurred during writing file end");
+        self.write(Request::End).expect("FATAL: Error occurred during writing file end");
     }
 }
 

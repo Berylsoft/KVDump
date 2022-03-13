@@ -1,7 +1,7 @@
 use std::{fs::OpenOptions, path::Path};
 pub use kvdump::*;
 
-type Tx = bmrng::unbounded::UnboundedRequestSender<Request, Result<Response>>;
+type Tx = bmrng::unbounded::UnboundedRequestSender<Request, Result<()>>;
 
 pub struct AsyncFileWriter {
     tx: Tx,
@@ -14,19 +14,12 @@ pub struct AsyncFileScopeWriter {
 
 impl AsyncFileWriter {
     pub fn init<P: AsRef<Path>>(path: P, config: Config) -> Result<AsyncFileWriter> {
-        let (tx, mut rx) = bmrng::unbounded_channel::<Request, Result<Response>>();
+        let (tx, mut rx) = bmrng::unbounded_channel::<Request, Result<()>>();
         let file = OpenOptions::new().write(true).create_new(true).open(path)?;
         let mut writer = Writer::init(file, config)?;
         tokio::spawn(async move {
             while let Ok((request, responder)) = rx.recv().await {
-                let drop = match request {
-                    Request::End => true,
-                    _ => false,
-                };
                 responder.respond(writer.write(request)).expect("FATAL: Channel closed when sending a response");
-                if drop {
-                    break;
-                }
             }
         });
         Ok(AsyncFileWriter { tx })
@@ -39,27 +32,17 @@ impl AsyncFileWriter {
         }
     }
 
-    pub async fn write_hash(&self) -> Result<Hash> {
-        let req = Request::Hash;
-        let resp = self.tx.send_receive(req).await.unwrap_or_else(|_| Err(Error::AsyncFileClosed))?;
-        Ok(match resp {
-            Response::Hash(hash) => hash,
-            _ => unreachable!(),
-        })
+    pub async fn write_hash(&self) -> Result<()> {
+        self.tx.send_receive(Request::Hash).await.unwrap_or_else(|_| Err(Error::AsyncFileClosed))
     }
 }
 
 impl AsyncFileScopeWriter {
     pub async fn write_kv<K: AsRef<[u8]>, V: AsRef<[u8]>>(&self, key: K, value: V) -> Result<()> {
-        let req = Request::KV(KV {
+        self.tx.send_receive(Request::KV(KV {
             scope: self.scope.clone(),
             key: Box::from(key.as_ref()),
             value: Box::from(value.as_ref()),
-        });
-        let resp = self.tx.send_receive(req).await.unwrap_or_else(|_| Err(Error::AsyncFileClosed))?;
-        Ok(match resp {
-            Response::KV => (),
-            _ => unreachable!(),
-        })
+        })).await.unwrap_or_else(|_| Err(Error::AsyncFileClosed))
     }
 }
