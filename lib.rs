@@ -30,7 +30,7 @@ macro_rules! read_sized_impl {
             Ok(buf)
         } else {
             Err(Error::UnexpectedEnd {
-                buffer: buf.to_vec(),
+                buf: Box::new(buf),
                 expected_len: LEN,
                 actual_len,
             })
@@ -40,14 +40,15 @@ macro_rules! read_sized_impl {
 
 trait ReadHelper: Read {
     #[inline]
-    fn read_bytes(&mut self, len: usize) -> Result<Vec<u8>> {
+    fn read_bytes(&mut self, len: usize) -> Result<Box<[u8]>> {
         let mut buf = vec![0u8; len];
         let actual_len = self.read(&mut buf)?;
+        let buf = buf.into_boxed_slice();
         if actual_len == len {
             Ok(buf)
         } else {
             Err(Error::UnexpectedEnd {
-                buffer: buf.to_vec(),
+                buf,
                 expected_len: len,
                 actual_len,
             })
@@ -100,9 +101,9 @@ impl<W: Write> WriteHelper for W {}
 
 #[derive(PartialEq, Eq, Debug, Clone)]
 pub struct KV {
-    pub scope: Vec<u8>,
-    pub key: Vec<u8>,
-    pub value: Vec<u8>,
+    pub scope: Box<[u8]>,
+    pub key: Box<[u8]>,
+    pub value: Box<[u8]>,
 }
 
 pub type Hash = [u8; HASH_LEN];
@@ -167,7 +168,7 @@ const SIZES_FLAG_BASES: SizeFlagBases = SizeFlagBases {
 
 #[derive(PartialEq, Eq, Debug, Clone)]
 pub struct Config {
-    pub ident: Vec<u8>,
+    pub ident: Box<[u8]>,
     pub sizes: Sizes,
 }
 
@@ -182,7 +183,7 @@ pub enum Error {
     ConfigNotMatch { existing: Config, current: Config },
     HashNotMatch { existing: Hash, calculated: Hash },
     InputLengthNotMatch { config_len: u32, input_len: u32, which: String },
-    UnexpectedEnd { buffer: Vec<u8>, expected_len: usize, actual_len: usize },
+    UnexpectedEnd { buf: Box<[u8]>, expected_len: usize, actual_len: usize },
     UnexpectedRowType { row_type: u8 },
     /// may happens only when using async-kvdump
     AsyncFileClosed,

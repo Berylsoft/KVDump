@@ -8,7 +8,7 @@ pub struct AsyncFileWriter {
 }
 
 pub struct AsyncFileScopeWriter {
-    scope: Vec<u8>,
+    scope: Box<[u8]>,
     tx: Tx,
 }
 
@@ -32,8 +32,11 @@ impl AsyncFileWriter {
         Ok(AsyncFileWriter { tx })
     }
 
-    pub fn new_scope(&self, scope: Vec<u8>) -> AsyncFileScopeWriter {
-        AsyncFileScopeWriter { scope, tx: self.tx.clone() }
+    pub fn new_scope<S: AsRef<[u8]>>(&self, scope: S) -> AsyncFileScopeWriter {
+        AsyncFileScopeWriter {
+            scope: Box::from(scope.as_ref()),
+            tx: self.tx.clone(),
+        }
     }
 
     pub async fn write_hash(self) -> Result<Hash> {
@@ -56,8 +59,12 @@ impl AsyncFileWriter {
 }
 
 impl AsyncFileScopeWriter {
-    pub async fn write_kv(&self, key: Vec<u8>, value: Vec<u8>) -> Result<()> {
-        let req = Request::KV(KV { scope: self.scope.clone(), key, value });
+    pub async fn write_kv<K: AsRef<[u8]>, V: AsRef<[u8]>>(&self, key: K, value: V) -> Result<()> {
+        let req = Request::KV(KV {
+            scope: self.scope.clone(),
+            key: Box::from(key.as_ref()),
+            value: Box::from(value.as_ref()),
+        });
         let resp = self.tx.send_receive(req).await.unwrap_or_else(|_| Err(Error::AsyncFileClosed));
         resp.map(|res| match res {
             Response::KV => (),
