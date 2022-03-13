@@ -119,13 +119,6 @@ pub enum Row {
     End,
 }
 
-#[derive(Debug, Clone)]
-pub enum Request {
-    KV(KV),
-    Hash,
-    End,
-}
-
 // endregion
 
 // region: config types
@@ -285,7 +278,7 @@ impl<F: Read> Iterator for Reader<F> {
     fn next(&mut self) -> Option<Self::Item> {
         match self.read() {
             Ok(Row::End) => None,
-            result => Some(result)
+            result => Some(result),
         }
     }
 }
@@ -324,42 +317,48 @@ impl<F: Write> Writer<F> {
         Ok(())
     }
 
-    pub fn write(&mut self, req: Request) -> Result<()> {
-        match req {
-            Request::KV(kv) => {
-                self.inner.write_u8(ROW_KV)?;
+    pub fn write_kv(&mut self, kv: KV) -> Result<()> {
+        self.inner.write_u8(ROW_KV)?;
 
-                macro_rules! skv_op_impl {
-                    ($($x:ident,)*) => {$({
-                        let input_len = into!(kv.$x.len());
-                        match self.config.sizes.$x {
-                            Some(config_len) => {
-                                if config_len != input_len {
-                                    return Err(Error::InputLengthNotMatch {
-                                        config_len,
-                                        input_len,
-                                        which: stringify!($x).to_owned(),
-                                    });
-                                }
-                            },
-                            None => self.inner.write_u32(input_len)?,
+        macro_rules! skv_op_impl {
+            ($($x:ident,)*) => {$({
+                let input_len = into!(kv.$x.len());
+                match self.config.sizes.$x {
+                    Some(config_len) => {
+                        if config_len != input_len {
+                            return Err(Error::InputLengthNotMatch {
+                                config_len,
+                                input_len,
+                                which: stringify!($x).to_owned(),
+                            });
                         }
-                        self.hasher.update(&kv.$x);
-                        self.inner.write_bytes(kv.$x)?;
-                    })*};
+                    },
+                    None => self.inner.write_u32(input_len)?,
                 }
-                skv_op_impl!(scope, key, value,);
-            },
-            Request::Hash => {
-                self.inner.write_u8(ROW_HASH)?;
-
-                let hash = *self.hasher.finalize().as_bytes();
-                self.inner.write_bytes(&hash)?;
-            },
-            Request::End => {
-                self.inner.write_u8(ROW_END)?;
-            },
+                self.hasher.update(&kv.$x);
+                self.inner.write_bytes(kv.$x)?;
+            })*};
         }
+        skv_op_impl!(scope, key, value,);
+
+        // TODO may too frequent
+        self.inner.flush()?;
+        Ok(())
+    }
+
+    pub fn write_hash(&mut self) -> Result<()> {
+        self.inner.write_u8(ROW_HASH)?;
+
+        let hash = *self.hasher.finalize().as_bytes();
+        self.inner.write_bytes(&hash)?;
+
+        self.inner.flush()?;
+        Ok(())
+    }
+
+    fn write_end(&mut self) -> Result<()> {
+        self.inner.write_u8(ROW_END)?;
+
         self.inner.flush()?;
         Ok(())
     }
@@ -373,8 +372,8 @@ impl<F: Write> Writer<F> {
 
 impl<F: Write> Drop for Writer<F> {
     fn drop(&mut self) {
-        self.write(Request::Hash).expect("FATAL: Error occurred during writing file end");
-        self.write(Request::End).expect("FATAL: Error occurred during writing file end");
+        self.write_hash().expect("FATAL: Error occurred during writing file final hash");
+        self.write_end().expect("FATAL: Error occurred during writing file end");
     }
 }
 

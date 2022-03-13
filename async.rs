@@ -1,6 +1,12 @@
 use std::{fs::OpenOptions, path::Path};
 pub use kvdump::*;
 
+#[derive(Debug, Clone)]
+pub enum Request {
+    KV(KV),
+    Hash,
+}
+
 type Tx = bmrng::unbounded::UnboundedRequestSender<Request, Result<()>>;
 
 pub struct AsyncFileWriter {
@@ -19,7 +25,10 @@ impl AsyncFileWriter {
         let mut writer = Writer::init(file, config)?;
         tokio::spawn(async move {
             while let Ok((request, responder)) = rx.recv().await {
-                responder.respond(writer.write(request)).expect("FATAL: Channel closed when sending a response");
+                responder.respond(match request {
+                    Request::KV(kv) => writer.write_kv(kv),
+                    Request::Hash => writer.write_hash(),
+                }).expect("FATAL: Channel closed when sending a response");
             }
         });
         Ok(AsyncFileWriter { tx })
