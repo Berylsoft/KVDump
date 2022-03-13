@@ -1,7 +1,9 @@
 pub const BS_IDENT: u32 = 0x42650000;
 
-use std::io::{self, Read, Write, Seek};
+use std::io::{self, Read, Write};
 use blake3::{Hasher, OUT_LEN as HASH_LEN};
+
+// region: util
 
 macro_rules! into {
     ($val:expr) => {
@@ -9,40 +11,27 @@ macro_rules! into {
     };
 }
 
-// unstable feature: bool_to_option
+#[inline]
+// polyfill for unstable feature: bool_to_option
 fn then_some<T>(b: bool, t: T) -> Option<T> {
     if b { Some(t) } else { None }
 }
 
-#[derive(Debug)]
-pub enum Error {
-    Io(io::Error),
-    VersionNotMatch { existing: u32 },
-    ConfigNotMatch { existing: Config, current: Config },
-    HashNotMatch { existing: Vec<u8>, calculated: Vec<u8> },
-    InputLengthNotMatch { config_len: u32, input_len: u32, which: String },
-    UnexpectedEnd { buffer: Vec<u8>, expected_len: usize, actual_len: usize },
-}
+// endregion
 
-impl From<io::Error> for Error {
-    fn from(err: io::Error) -> Error {
-        Error::Io(err)
-    }
-}
+// region: helper traits
 
-pub type Result<T> = std::result::Result<T, Error>;
-
-macro_rules! read_num_impl {
-    ($self:expr, $type:ty, $len:expr) => {{
-        const LEN_NUM: usize = $len;
-        let mut buf = [0u8; LEN_NUM];
+macro_rules! read_sized_impl {
+    ($self:expr, $len:expr) => {{
+        const LEN: usize = $len;
+        let mut buf = [0u8; LEN];
         let actual_len = $self.read(&mut buf)?;
-        if actual_len == LEN_NUM {
-            Ok(<$type>::from_be_bytes(buf))
+        if actual_len == LEN {
+            Ok(buf)
         } else {
             Err(Error::UnexpectedEnd {
                 buffer: buf.to_vec(),
-                expected_len: LEN_NUM,
+                expected_len: LEN,
                 actual_len,
             })
         }
@@ -67,23 +56,21 @@ trait ReadHelper: Read {
 
     #[inline]
     fn read_u32(&mut self) -> Result<u32> {
-        read_num_impl!(self, u32, 4)
+        read_sized_impl!(self, 4).map(u32::from_be_bytes)
     }
 
     #[inline]
     fn read_u8(&mut self) -> Result<u8> {
-        read_num_impl!(self, u8, 1)
+        read_sized_impl!(self, 1).map(u8::from_be_bytes)
+    }
+
+    #[inline]
+    fn read_hash(&mut self) -> Result<Hash> {
+        read_sized_impl!(self, HASH_LEN)
     }
 }
 
 impl<R: Read> ReadHelper for R {}
-
-macro_rules! write_num_impl {
-    ($self:expr, $type:ty, $val:expr) => {{
-        $self.write(<$type>::to_be_bytes($val).as_ref())?;
-        Ok(())
-    }};
-}
 
 trait WriteHelper: Write {
     #[inline]
@@ -94,23 +81,22 @@ trait WriteHelper: Write {
 
     #[inline]
     fn write_u32(&mut self, val: u32) -> io::Result<()> {
-        write_num_impl!(self, u32, val)
+        self.write(&val.to_be_bytes())?;
+        Ok(())
     }
 
     #[inline]
     fn write_u8(&mut self, val: u8) -> io::Result<()> {
-        write_num_impl!(self, u8, val)
+        self.write(&val.to_be_bytes())?;
+        Ok(())
     }
 }
 
 impl<W: Write> WriteHelper for W {}
 
-const COL_KV: u8 = 0;
-const COL_HASH: u8 = 1;
+// endregion
 
-const SIZED_FLAG_SCOPE: u8 = 1 << 0;
-const SIZED_FLAG_KEY: u8 = 1 << 1;
-const SIZED_FLAG_VALUE: u8 = 1 << 2;
+// region: row types
 
 #[derive(PartialEq, Eq, Debug, Clone)]
 pub struct KV {
@@ -119,36 +105,116 @@ pub struct KV {
     pub value: Vec<u8>,
 }
 
+pub type Hash = [u8; HASH_LEN];
+
+const ROW_KV: u8 = 0;
+const ROW_HASH: u8 = 1;
+const ROW_END: u8 = 2;
+
+#[derive(Debug, Clone)]
+pub enum Row {
+    KV(KV),
+    Hash(Hash),
+    End,
+}
+
+#[derive(Debug, Clone)]
+pub enum Request {
+    KV(KV),
+    Hash,
+    End,
+}
+
+#[derive(Debug, Clone)]
+pub enum Response {
+    KV,
+    Hash(Hash),
+    End,
+}
+
+// endregion
+
+// region: config types
+
 #[derive(PartialEq, Eq, Debug, Clone)]
-pub struct Lengths {
+pub struct Sizes {
     pub scope: Option<u32>,
     pub key: Option<u32>,
     pub value: Option<u32>,
 }
 
-impl Lengths {
+impl Sizes {
     fn flag(&self) -> u8 {
         let mut flag = 0;
-        if self.scope.is_some() { flag |= SIZED_FLAG_SCOPE }
-        if self.key.is_some() { flag |= SIZED_FLAG_KEY }
-        if self.value.is_some() { flag |= SIZED_FLAG_VALUE }
+        if self.scope.is_some() { flag |= SIZES_FLAG_BASES.scope }
+        if self.key.is_some() { flag |= SIZES_FLAG_BASES.key }
+        if self.value.is_some() { flag |= SIZES_FLAG_BASES.value }
         flag
     }
 }
 
+struct SizeFlagBases {
+    scope: u8,
+    key: u8,
+    value: u8,
+}
+
+const SIZES_FLAG_BASES: SizeFlagBases = SizeFlagBases {
+    scope: 1 << 0,
+    key: 1 << 1,
+    value: 1 << 2,
+};
+
 #[derive(PartialEq, Eq, Debug, Clone)]
 pub struct Config {
     pub ident: Vec<u8>,
-    pub len: Lengths,
+    pub sizes: Sizes,
 }
 
-pub struct Reader<F: Read + Seek + Sized> {
+// endregion
+
+// region: error types
+
+#[derive(Debug)]
+pub enum Error {
+    Io(io::Error),
+    VersionNotMatch { existing: u32 },
+    ConfigNotMatch { existing: Config, current: Config },
+    HashNotMatch { existing: Hash, calculated: Hash },
+    InputLengthNotMatch { config_len: u32, input_len: u32, which: String },
+    UnexpectedEnd { buffer: Vec<u8>, expected_len: usize, actual_len: usize },
+    UnexpectedRowType { row_type: u8 },
+    /// may happens only when using async-kvdump
+    AsyncFileClosed,
+}
+
+impl From<io::Error> for Error {
+    fn from(err: io::Error) -> Error {
+        Error::Io(err)
+    }
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl std::error::Error for Error {}
+
+pub type Result<T> = std::result::Result<T, Error>;
+
+// endregion
+
+// region: reader
+
+pub struct Reader<F: Read> {
     inner: F,
     config: Config,
     hasher: Hasher,
 }
 
-impl<F: Read + Seek + Sized> Reader<F> {
+impl<F: Read> Reader<F> {
     #[inline]
     pub fn config(&self) -> &Config {
         &self.config
@@ -163,54 +229,55 @@ impl<F: Read + Seek + Sized> Reader<F> {
         let ident_len = into!(inner.read_u32()?);
         let ident = inner.read_bytes(ident_len)?;
 
-        let sized_flags = inner.read_u8()?;
+        let sizes_flag = inner.read_u8()?;
         macro_rules! read_init_kvf_impl {
-            ($x:ident, $flag:expr) => {
-                let $x = then_some((sized_flags & $flag) != 0, inner.read_u32()?);
-            };
-        }
-        read_init_kvf_impl!(scope, SIZED_FLAG_SCOPE);
-        read_init_kvf_impl!(key, SIZED_FLAG_KEY);
-        read_init_kvf_impl!(value, SIZED_FLAG_VALUE);
-        let len = Lengths { scope, key, value };
-
-        Ok(Config { ident, len })
-    }
-
-    pub fn read_kv(&mut self) -> Result<KV> {
-        assert_eq!(self.inner.read_u8()?, COL_KV);
-
-        macro_rules! read_kvf_impl {
             ($x:ident) => {
-                let len = into!(match self.config.len.$x {
-                    Some(len) => len,
-                    None => self.inner.read_u32()?,
-                });
-                let $x = self.inner.read_bytes(len)?;
-                self.hasher.update(&$x);
+                let $x = then_some((sizes_flag & SIZES_FLAG_BASES.$x) != 0, inner.read_u32()?);
             };
         }
-        read_kvf_impl!(scope);
-        read_kvf_impl!(key);
-        read_kvf_impl!(value);
+        read_init_kvf_impl!(scope);
+        read_init_kvf_impl!(key);
+        read_init_kvf_impl!(value);
+        let len = Sizes { scope, key, value };
 
-        Ok(KV { scope, key, value })
+        Ok(Config { ident, sizes: len })
     }
 
-    pub fn read_hash(&mut self) -> Result<Vec<u8>> {
-        assert_eq!(self.inner.read_u8()?, COL_HASH);
+    pub fn read(&mut self) -> Result<Row> {
+        Ok(match self.inner.read_u8()? {
+            ROW_KV => {
+                macro_rules! read_kvf_impl {
+                    ($x:ident) => {
+                        let len = into!(match self.config.sizes.$x {
+                            Some(len) => len,
+                            None => self.inner.read_u32()?,
+                        });
+                        let $x = self.inner.read_bytes(len)?;
+                        self.hasher.update(&$x);
+                    };
+                }
+                read_kvf_impl!(scope);
+                read_kvf_impl!(key);
+                read_kvf_impl!(value);
 
-        let existing = self.inner.read_bytes(HASH_LEN)?;
-        let calculated = self.hasher.finalize();
-        if existing.as_slice() != calculated.as_bytes() {
-            return Err(Error::HashNotMatch {
-                existing,
-                calculated: calculated.as_bytes().to_vec(),
-            });
-        }
-        self.hasher.reset();
+                Row::KV(KV { scope, key, value })
+            },
+            ROW_HASH => {
+                let existing = self.inner.read_hash()?;
+                let calculated = *self.hasher.finalize().as_bytes();
+                if &existing != &calculated {
+                    return Err(Error::HashNotMatch {
+                        existing,
+                        calculated,
+                    });
+                }
+                self.hasher.reset();
 
-        Ok(existing)
+                Row::Hash(calculated)
+            },
+            ROW_END => Row::End,
+            row_type => return Err(Error::UnexpectedRowType { row_type }),
+        })
     }
 
     pub fn init(mut inner: F) -> Result<Reader<F>> {
@@ -220,13 +287,28 @@ impl<F: Read + Seek + Sized> Reader<F> {
     }
 }
 
-pub struct Writer<F: Read + Write + Seek + Sized> {
+impl<F: Read> Iterator for Reader<F> {
+    type Item = Result<Row>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.read() {
+            Ok(Row::End) => None,
+            result => Some(result)
+        }
+    }
+}
+
+// endregion
+
+// region: writer
+
+pub struct Writer<F: Write> {
     inner: F,
     config: Config,
     hasher: Hasher,
 }
 
-impl<F: Read + Write + Seek + Sized> Writer<F> {
+impl<F: Write> Writer<F> {
     #[inline]
     pub fn config(&self) -> &Config {
         &self.config
@@ -238,10 +320,10 @@ impl<F: Read + Write + Seek + Sized> Writer<F> {
         self.inner.write_u32(into!(self.config.ident.len()))?;
         self.inner.write_bytes(self.config.ident.clone())?;
 
-        self.inner.write_u8(self.config.len.flag())?;
+        self.inner.write_u8(self.config.sizes.flag())?;
         macro_rules! write_init_kvf_impl {
             ($x:ident) => {
-                self.inner.write_u32(self.config.len.$x.unwrap_or(0))?;
+                self.inner.write_u32(self.config.sizes.$x.unwrap_or(0))?;
             };
         }
         write_init_kvf_impl!(scope);
@@ -252,49 +334,54 @@ impl<F: Read + Write + Seek + Sized> Writer<F> {
         Ok(())
     }
 
-    pub fn write_kv(&mut self, kv: KV) -> Result<()> {
-        self.inner.write_u8(COL_KV)?;
+    pub fn write(&mut self, req: Request) -> Result<Response> {
+        Ok(match req {
+            Request::KV(kv) => {
+                self.inner.write_u8(ROW_KV)?;
 
-        macro_rules! write_kvf_impl {
-            ($x:ident) => {{
-                let input_len = into!(kv.$x.len());
-                match self.config.len.$x {
-                    Some(config_len) => {
-                        if config_len != input_len {
-                            return Err(Error::InputLengthNotMatch {
-                                config_len,
-                                input_len,
-                                which: stringify!($x).to_owned(),
-                            });
+                macro_rules! write_kvf_impl {
+                    ($x:ident) => {{
+                        let input_len = into!(kv.$x.len());
+                        match self.config.sizes.$x {
+                            Some(config_len) => {
+                                if config_len != input_len {
+                                    return Err(Error::InputLengthNotMatch {
+                                        config_len,
+                                        input_len,
+                                        which: stringify!($x).to_owned(),
+                                    });
+                                }
+                            },
+                            None => self.inner.write_u32(input_len)?,
                         }
-                    },
-                    None => self.inner.write_u32(input_len)?,
+                        self.hasher.update(&kv.$x);
+                        self.inner.write_bytes(kv.$x)?;
+                    }};
                 }
-                self.hasher.update(&kv.$x);
-                self.inner.write_bytes(kv.$x)?;
-            }};
-        }
-        write_kvf_impl!(scope);
-        write_kvf_impl!(key);
-        write_kvf_impl!(value);
+                write_kvf_impl!(scope);
+                write_kvf_impl!(key);
+                write_kvf_impl!(value);
 
-        // TODO may too frequent
-        self.inner.flush()?;
-        Ok(())
-    }
+                // TODO may too frequent
+                self.inner.flush()?;
+                Response::KV
+            },
+            Request::Hash => {
+                self.inner.write_u8(ROW_HASH)?;
 
-    pub fn write_hash(&mut self) -> Result<Vec<u8>> {
-        self.inner.write_u8(COL_HASH)?;
+                let hash = *self.hasher.finalize().as_bytes();
+                self.inner.write_bytes(&hash)?;
 
-        let hash = self.hasher.finalize();
-        self.inner.write_bytes(hash.as_bytes())?;
+                self.inner.flush()?;
+                Response::Hash(hash)
+            },
+            Request::End => {
+                self.inner.write_u8(ROW_END)?;
 
-        Ok(hash.as_bytes().to_vec())
-    }
-
-    pub fn write_end(mut self) -> Result<()> {
-        self.write_hash()?;
-        Ok(())
+                self.inner.flush()?;
+                Response::End
+            },
+        })
     }
 
     pub fn init(inner: F, config: Config) -> Result<Writer<F>> {
@@ -304,3 +391,11 @@ impl<F: Read + Write + Seek + Sized> Writer<F> {
         Ok(_self)
     }
 }
+
+impl<F: Write> Drop for Writer<F> {
+    fn drop(&mut self) {
+        self.write(Request::End).unwrap();
+    }
+}
+
+// endregion

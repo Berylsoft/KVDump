@@ -1,14 +1,7 @@
 use std::{fs::OpenOptions, path::Path};
-use tokio::{spawn, sync::mpsc};
 pub use kvdump::*;
 
-#[derive(Debug)]
-enum Message {
-    KV(KV),
-    Close,
-}
-
-type Tx = mpsc::UnboundedSender<Message>;
+type Tx = bmrng::unbounded::UnboundedRequestSender<Request, Result<Response>>;
 
 pub struct AsyncFileWriter {
     tx: Tx,
@@ -21,20 +14,18 @@ pub struct AsyncFileScopeWriter {
 
 impl AsyncFileWriter {
     pub fn init<P: AsRef<Path>>(path: P, config: Config) -> Result<AsyncFileWriter> {
-        let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
+        let (tx, mut rx) = bmrng::unbounded_channel::<Request, Result<Response>>();
         let file = OpenOptions::new().write(true).create(true).open(path)?;
         let mut writer = Writer::init(file, config)?;
-        spawn(async move {
-            while let Some(message) = rx.recv().await {
-                // TODO spread error to upstream
-                match message {
-                    Message::KV(kv) => {
-                        writer.write_kv(kv).unwrap();
-                    },
-                    Message::Close => {
-                        writer.write_hash().unwrap();
-                        break;
-                    }
+        tokio::spawn(async move {
+            while let Ok((request, responder)) = rx.recv().await {
+                let drop = match request {
+                    Request::End => true,
+                    _ => false,
+                };
+                responder.respond(writer.write(request)).expect("FATAL: Channel closed when sending a response");
+                if drop {
+                    break;
                 }
             }
         });
@@ -45,13 +36,32 @@ impl AsyncFileWriter {
         AsyncFileScopeWriter { scope, tx: self.tx.clone() }
     }
 
-    pub fn close(self) {
-        self.tx.send(Message::Close).unwrap();
+    pub async fn write_hash(self) -> Result<Hash> {
+        let req = Request::Hash;
+        let resp = self.tx.send_receive(req).await.unwrap_or_else(|_| Err(Error::AsyncFileClosed));
+        resp.map(|res| match res {
+            Response::Hash(hash) => hash,
+            _ => unreachable!(),
+        })
+    }
+
+    pub async fn close(self) -> Result<()> {
+        let req = Request::End;
+        let resp = self.tx.send_receive(req).await.unwrap_or_else(|_| Err(Error::AsyncFileClosed));
+        resp.map(|res| match res {
+            Response::End => (),
+            _ => unreachable!(),
+        })
     }
 }
 
 impl AsyncFileScopeWriter {
-    pub fn write_kv(&self, key: Vec<u8>, value: Vec<u8>) {
-        self.tx.send(Message::KV(KV { scope: self.scope.clone(), key, value })).unwrap();
+    pub async fn write_kv(&self, key: Vec<u8>, value: Vec<u8>) -> Result<()> {
+        let req = Request::KV(KV { scope: self.scope.clone(), key, value });
+        let resp = self.tx.send_receive(req).await.unwrap_or_else(|_| Err(Error::AsyncFileClosed));
+        resp.map(|res| match res {
+            Response::KV => (),
+            _ => unreachable!(),
+        })
     }
 }
