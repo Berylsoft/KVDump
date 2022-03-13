@@ -13,5 +13,5 @@ path = "../async.rs"
 
 [dependencies]
 kvdump = { path = "../kvdump" }
-tokio = { version = "1", features = [] }
+tokio = { version = "1", features = ["rt"] }
 bmrng = "0.5"
