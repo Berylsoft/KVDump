@@ -168,12 +168,30 @@ pub struct Config {
 // region: error types
 
 #[derive(Debug)]
+pub enum InputKind {
+    Scope,
+    Key,
+    Value,
+}
+
+impl InputKind {
+    fn from(s: &str) -> InputKind {
+        match s {
+            "scope" => InputKind::Scope,
+            "key" => InputKind::Key,
+            "value" => InputKind::Value,
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub enum Error {
     Io(io::Error),
     VersionNotMatch { existing: u32 },
     ConfigNotMatch { existing: Config, current: Config },
     HashNotMatch { existing: Hash, calculated: Hash },
-    InputLengthNotMatch { config_len: u32, input_len: u32, which: String },
+    InputLengthNotMatch { config_len: u32, input_len: u32, which: InputKind },
     UnexpectedEnd { buf: Box<[u8]>, expected_len: usize, actual_len: usize },
     UnexpectedRowType { row_type: u8 },
     /// may happens only when using async-kvdump
@@ -329,7 +347,7 @@ impl<F: Write> Writer<F> {
                             return Err(Error::InputLengthNotMatch {
                                 config_len,
                                 input_len,
-                                which: stringify!($x).to_owned(),
+                                which: InputKind::from(stringify!($x)),
                             });
                         }
                     },
@@ -346,14 +364,14 @@ impl<F: Write> Writer<F> {
         Ok(())
     }
 
-    pub fn write_hash(&mut self) -> Result<()> {
+    pub fn write_hash(&mut self) -> Result<Hash> {
         self.inner.write_u8(ROW_HASH)?;
 
         let hash = *self.hasher.finalize().as_bytes();
         self.inner.write_bytes(&hash)?;
 
         self.inner.flush()?;
-        Ok(())
+        Ok(hash)
     }
 
     fn write_end(&mut self) -> Result<()> {
@@ -372,8 +390,8 @@ impl<F: Write> Writer<F> {
 
 impl<F: Write> Drop for Writer<F> {
     fn drop(&mut self) {
-        self.write_hash().expect("FATAL: Error occurred during writing file final hash");
-        self.write_end().expect("FATAL: Error occurred during writing file end");
+        self.write_hash().expect("FATAL: Error occurred during writing final hash");
+        self.write_end().expect("FATAL: Error occurred during writing end");
     }
 }
 

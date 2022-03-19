@@ -27,7 +27,7 @@ impl AsyncFileWriter {
             while let Ok((request, responder)) = rx.recv().await {
                 responder.respond(match request {
                     Request::KV(kv) => writer.write_kv(kv),
-                    Request::Hash => writer.write_hash(),
+                    Request::Hash => writer.write_hash().map(|_| ()),
                 }).expect("FATAL: Channel closed when sending a response");
             }
         });
