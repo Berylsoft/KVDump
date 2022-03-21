@@ -34,7 +34,7 @@ impl AsyncFileWriter {
         Ok(AsyncFileWriter { tx })
     }
 
-    pub fn new_scope<S: AsRef<[u8]>>(&self, scope: S) -> AsyncFileScopeWriter {
+    pub fn open_scope<S: AsRef<[u8]>>(&self, scope: S) -> AsyncFileScopeWriter {
         AsyncFileScopeWriter {
             scope: Box::from(scope.as_ref()),
             tx: self.tx.clone(),

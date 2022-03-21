@@ -174,8 +174,8 @@ pub enum InputKind {
     Value,
 }
 
-impl InputKind {
-    fn from(s: &str) -> InputKind {
+impl<'a> From<&'a str> for InputKind {
+    fn from(s: &'a str) -> Self {
         match s {
             "scope" => InputKind::Scope,
             "key" => InputKind::Key,
@@ -347,7 +347,7 @@ impl<F: Write> Writer<F> {
                             return Err(Error::InputLengthNotMatch {
                                 config_len,
                                 input_len,
-                                which: InputKind::from(stringify!($x)),
+                                which: stringify!($x).into(),
                             });
                         }
                     },
