@@ -9,17 +9,17 @@ pub enum Request {
 
 type Tx = bmrng::unbounded::UnboundedRequestSender<Request, Result<()>>;
 
-pub struct AsyncFileWriter {
+pub struct Db {
     tx: Tx,
 }
 
-pub struct AsyncFileScopeWriter {
+pub struct Scope {
     scope: Box<[u8]>,
     tx: Tx,
 }
 
-impl AsyncFileWriter {
-    pub fn init<P: AsRef<Path>>(path: P, config: Config) -> Result<AsyncFileWriter> {
+impl Db {
+    pub fn init<P: AsRef<Path>>(path: P, config: Config) -> Result<Db> {
         let (tx, mut rx) = bmrng::unbounded_channel::<Request, Result<()>>();
         let file = OpenOptions::new().write(true).create_new(true).open(path)?;
         let mut writer = Writer::init(file, config)?;
@@ -31,11 +31,11 @@ impl AsyncFileWriter {
                 }).expect("FATAL: Channel closed when sending a response");
             }
         });
-        Ok(AsyncFileWriter { tx })
+        Ok(Db { tx })
     }
 
-    pub fn open_scope<S: AsRef<[u8]>>(&self, scope: S) -> AsyncFileScopeWriter {
-        AsyncFileScopeWriter {
+    pub fn open_scope<S: AsRef<[u8]>>(&self, scope: S) -> Scope {
+        Scope {
             scope: Box::from(scope.as_ref()),
             tx: self.tx.clone(),
         }
@@ -46,7 +46,11 @@ impl AsyncFileWriter {
     }
 }
 
-impl AsyncFileScopeWriter {
+impl Scope {
+    pub fn name(&self) -> Box<[u8]> {
+        self.scope.clone()
+    }
+
     pub async fn write_kv<K: AsRef<[u8]>, V: AsRef<[u8]>>(&self, key: K, value: V) -> Result<()> {
         self.tx.send_receive(Request::KV(KV {
             scope: self.scope.clone(),
