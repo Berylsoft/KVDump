@@ -25,16 +25,8 @@ macro_rules! read_sized_impl {
     ($self:expr, $len:expr) => {{
         const LEN: usize = $len;
         let mut buf = [0u8; LEN];
-        let actual_len = $self.read(&mut buf)?;
-        if actual_len == LEN {
-            Ok(buf)
-        } else {
-            Err(Error::UnexpectedEnd {
-                buf: Box::new(buf),
-                expected_len: LEN,
-                actual_len,
-            })
-        }
+        $self.read_exact(&mut buf)?;
+        Ok(buf)
     }};
 }
 
@@ -42,17 +34,8 @@ trait ReadHelper: Read {
     #[inline]
     fn read_bytes(&mut self, len: usize) -> Result<Box<[u8]>> {
         let mut buf = vec![0u8; len];
-        let actual_len = self.read(&mut buf)?;
-        let buf = buf.into_boxed_slice();
-        if actual_len == len {
-            Ok(buf)
-        } else {
-            Err(Error::UnexpectedEnd {
-                buf,
-                expected_len: len,
-                actual_len,
-            })
-        }
+        self.read_exact(&mut buf)?;
+        Ok(buf.into_boxed_slice())
     }
 
     #[inline]
@@ -76,19 +59,19 @@ impl<R: Read> ReadHelper for R {}
 trait WriteHelper: Write {
     #[inline]
     fn write_bytes<B: AsRef<[u8]>>(&mut self, bytes: B) -> io::Result<()> {
-        self.write(bytes.as_ref())?;
+        self.write_all(bytes.as_ref())?;
         Ok(())
     }
 
     #[inline]
     fn write_u32(&mut self, val: u32) -> io::Result<()> {
-        self.write(&val.to_be_bytes())?;
+        self.write_all(&val.to_be_bytes())?;
         Ok(())
     }
 
     #[inline]
     fn write_u8(&mut self, val: u8) -> io::Result<()> {
-        self.write(&val.to_be_bytes())?;
+        self.write_all(&val.to_be_bytes())?;
         Ok(())
     }
 }
@@ -192,7 +175,6 @@ pub enum Error {
     ConfigNotMatch { existing: Config, current: Config },
     HashNotMatch { existing: Hash, calculated: Hash },
     InputLengthNotMatch { config_len: u32, input_len: u32, which: InputKind },
-    UnexpectedEnd { buf: Box<[u8]>, expected_len: usize, actual_len: usize },
     UnexpectedRowType { row_type: u8 },
     /// may happens only when using async-kvdump
     AsyncFileClosed,
