@@ -246,7 +246,7 @@ impl<F: Read> Reader<F> {
             ROW_HASH => Row::Hash({
                 let existing = self.inner.read_hash()?;
                 let calculated = *self.hasher.finalize().as_bytes();
-                if &existing != &calculated {
+                if existing != calculated {
                     return Err(Error::HashNotMatch {
                         existing,
                         calculated,

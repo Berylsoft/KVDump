@@ -42,7 +42,7 @@ impl Db {
     }
 
     pub async fn write_hash(&self) -> Result<()> {
-        self.tx.send_receive(Request::Hash).await.unwrap_or_else(|_| Err(Error::AsyncFileClosed))
+        self.tx.send_receive(Request::Hash).await.unwrap_or(Err(Error::AsyncFileClosed))
     }
 }
 
@@ -56,6 +56,6 @@ impl Scope {
             scope: self.scope.clone(),
             key: Box::from(key.as_ref()),
             value: Box::from(value.as_ref()),
-        })).await.unwrap_or_else(|_| Err(Error::AsyncFileClosed))
+        })).await.unwrap_or(Err(Error::AsyncFileClosed))
     }
 }
