@@ -11,12 +11,6 @@ macro_rules! into {
     };
 }
 
-#[inline]
-// polyfill for unstable feature: bool_to_option
-fn then_some<T>(b: bool, t: T) -> Option<T> {
-    if b { Some(t) } else { None }
-}
-
 // endregion
 
 // region: helper traits
@@ -224,7 +218,7 @@ impl<F: Read> Reader<F> {
         let sizes_flag = inner.read_u8()?;
         macro_rules! skv_op_impl {
             ($($x:ident,)*) => {$(
-                let $x = then_some((sizes_flag & SIZES_FLAG_BASES.$x) != 0, inner.read_u32()?);
+                let $x = ((sizes_flag & SIZES_FLAG_BASES.$x) != 0).then_some(inner.read_u32()?);
             )*};
         }
         skv_op_impl!(scope, key, value,);
