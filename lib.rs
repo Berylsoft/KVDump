@@ -17,8 +17,7 @@ macro_rules! into {
 
 macro_rules! read_sized_impl {
     ($self:expr, $len:expr) => {{
-        const LEN: usize = $len;
-        let mut buf = [0u8; LEN];
+        let mut buf = [0; $len];
         $self.read_exact(&mut buf)?;
         Ok(buf)
     }};
@@ -27,7 +26,7 @@ macro_rules! read_sized_impl {
 trait ReadHelper: Read {
     #[inline]
     fn read_bytes(&mut self, len: usize) -> Result<Box<[u8]>> {
-        let mut buf = vec![0u8; len];
+        let mut buf = vec![0; len];
         self.read_exact(&mut buf)?;
         Ok(buf.into_boxed_slice())
     }
