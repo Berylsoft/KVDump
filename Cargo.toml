@@ -1,5 +1,16 @@
-[workspace]
-members = [
-    "kvdump",
-    "async-kvdump",
-]
+[package]
+name = "kvdump"
+version = "0.1.0"
+edition = "2021"
+authors = ["stackinspector"]
+license = "MPL-2.0"
+repository = "https://github.com/Berylsoft/kvdump"
+description = "A straightforward and compact key-value or scope-key-value binary file format for Berylsoft projects."
+
+[lib]
+name = "kvdump"
+path = "../lib.rs"
+
+[dependencies]
+blake3 = "1"
+foundations = { path = "../foundations", features = ["num-enum", "usize-casting", "error-enum"] }
