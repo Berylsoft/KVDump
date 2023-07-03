@@ -13,3 +13,4 @@ path = "../lib.rs"
 
 [dependencies]
 blake3 = "1"
+foundations = { path = "../../foundations", features = ["num-enum", "usize-casting", "error-enum"] }
