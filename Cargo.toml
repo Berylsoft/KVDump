@@ -9,8 +9,8 @@ description = "A straightforward and compact key-value or scope-key-value binary
 
 [lib]
 name = "kvdump"
-path = "../lib.rs"
+path = "lib.rs"
 
 [dependencies]
 blake3 = "1"
-foundations = { path = "../foundations", features = ["num-enum", "usize-casting", "error-enum"] }
+foundations = { git = "https://github.com/Berylsoft/foundations", features = ["num-enum", "usize-casting", "error-enum"] }
