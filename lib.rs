@@ -1,15 +1,16 @@
 pub const BS_IDENT: u32 = 0x42650000;
 
 use std::io::{self, Read, Write};
-use blake3::{Hasher, OUT_LEN as HASH_LEN};
+pub use blake3::{Hasher, OUT_LEN as HASH_LEN};
 use foundations::{num_enum, usize_casting::*, error_enum};
 
 // region: util
 
-fn usize_u32(n: usize) -> Result<u32> {
+pub fn usize_u32(n: usize) -> Result<u32> {
     n.try_into().map_err(|_| Error::TooLongSize { size: usize_u64(n) })
 }
 
+#[macro_export]
 macro_rules! check {
     ($l:expr, $r:expr, $varient:expr) => {
         if $l != $r {
@@ -86,7 +87,7 @@ pub struct KV {
 pub type Hash = [u8; HASH_LEN];
 
 num_enum! {
-    enum RowType {
+    pub enum RowType {
         KV   = 0,
         Hash = 1,
         End  = 2,
@@ -112,7 +113,7 @@ pub struct Sizes {
 }
 
 impl Sizes {
-    fn flag(&self) -> u8 {
+    pub fn flag(&self) -> u8 {
         let mut flag = 0;
         macro_rules! skv_op_impl {
             ($($x:ident,)*) => {$(
@@ -176,6 +177,7 @@ error_enum! {
         RowType(u8),
         TooLongSize { size: u64 },
         Closed,
+        AsyncFileClosed,
     } convert {
         Io => io::Error,
     }
