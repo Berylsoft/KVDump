@@ -353,10 +353,11 @@ impl<F: Write> Writer<F> {
     }
 
     pub fn close(&mut self) -> Result<()> {
-        self.close_guard()?;
-        self.write_hash()?;
-        self.write_end()?;
-        self.closed = true;
+        if !self.closed {
+            self.write_hash()?;
+            self.write_end()?;
+            self.closed = true;
+        }
         Ok(())
     }
 
