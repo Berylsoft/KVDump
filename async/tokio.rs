@@ -1,6 +1,6 @@
 pub use tokio::sync::{
     oneshot::{channel as one_channel, Sender as OneTx},
-    mpsc::{unbounded_channel as req_channel, UnboundedSender as ReqTx},
+    mpsc::{unbounded_channel as req_channel, UnboundedSender as ReqTx, UnboundedReceiver as ReqRx},
 };
 
 #[inline]
@@ -22,4 +22,15 @@ where
         std::io::ErrorKind::Other,
         err,
     ))
+}
+
+#[inline(always)]
+pub fn recv_req<T: Send>(rx: &mut ReqRx<T>) -> Option<T> {
+    rx.blocking_recv()
+}
+
+#[inline(always)]
+#[allow(unused_mut)]
+pub fn send_res<T: Send>(mut tx: OneTx<T>, v: T) -> Result<(), T> {
+    tx.send(v)
 }

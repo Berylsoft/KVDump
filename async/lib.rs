@@ -3,7 +3,7 @@ use std::{path::{Path, PathBuf}, fs::{OpenOptions, File}};
 pub use kvdump;
 use kvdump::*;
 
-#[path = "tokio.rs"]
+#[path = "smol.rs"]
 mod async_basics;
 use async_basics::*;
 
@@ -26,7 +26,7 @@ pub struct Handle {
 impl Handle {
     pub async fn request(&self, req: Request) -> std::result::Result<Result<()>, Option<Request>> {
         let (res_tx, res_rx) = one_channel::<Result<()>>();
-        self.inner.send((req, res_tx)).map_err(|payload| Some(payload.0.0))?;
+        self.inner.send((req, res_tx)).await.map_err(|payload| Some(payload.0.0))?;
         res_rx.await.map_err(|_| None)
     }
 
@@ -78,8 +78,9 @@ pub async fn open(path: PathBuf, config: Config, sync_interval: u16) -> Result<H
         Context::init(&path, config, sync_interval)
     }).await??;
     spawn_blocking(move || {
-        if let Some((req, res_tx)) = req_rx.blocking_recv() {
-            res_tx.send(ctx.exec(req)).expect("FATAL: all request sender dropped");
+        if let Some((req, res_tx)) = recv_req(&mut req_rx) {
+            let res = ctx.exec(req);
+            send_res(res_tx, res).expect("FATAL: all request sender dropped");
         } else {
             ctx.exec(Request::Close).expect("FATAL: Error occurred during closing");
         }

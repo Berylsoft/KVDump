@@ -13,4 +13,7 @@ path = "lib.rs"
 
 [dependencies]
 kvdump = { path = ".." }
-tokio = { version = "1", default-features = false, features = ["rt", "sync"] }
+# tokio = { version = "1", default-features = false, features = ["rt", "sync"] }
+async-channel = "1"
+async-oneshot = "0.5"
+blocking = "1"
