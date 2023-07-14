@@ -1,5 +1,5 @@
 [package]
-name = "kvdump"
+name = "async-kvdump"
 version = "0.1.0"
 edition = "2021"
 authors = ["stackinspector"]
@@ -8,15 +8,9 @@ repository = "https://github.com/Berylsoft/kvdump"
 description = "A straightforward and compact key-value or scope-key-value binary file format for Berylsoft projects."
 
 [lib]
-name = "kvdump"
+name = "async_kvdump"
 path = "lib.rs"
 
 [dependencies]
-blake3 = "1"
-foundations = { git = "https://github.com/Berylsoft/foundations", features = ["num-enum", "usize-casting", "error-enum"] }
-
-[workspace]
-resolver = "2"
-members = [
-    "async"
-]
+kvdump = { path = ".." }
+tokio = { version = "1", default-features = false, features = ["rt", "sync"] }
