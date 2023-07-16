@@ -416,9 +416,9 @@ pub mod actor {
 
     #[derive(Debug)]
     pub struct WriterContextConfig {
-        path: PathBuf,
-        config: Config,
-        sync_interval: u16,
+        pub path: PathBuf,
+        pub config: Config,
+        pub sync_interval: u16,
     }
 
     pub struct WriterContext {
