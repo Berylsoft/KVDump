@@ -428,15 +428,9 @@ pub mod actor {
     }
 
     impl Context for WriterContext {
-        type Init = WriterContextConfig;
         type Req = Request;
         type Res = ();
         type Err = Error;
-
-        fn init(WriterContextConfig { path, config, sync_interval }: WriterContextConfig) -> Result<WriterContext> {
-            let file = OpenOptions::new().write(true).create_new(true).open(path)?;
-            Ok(WriterContext { writer: Writer::init(file, config)?, non_synced: 0, sync_interval })
-        }
 
         fn exec(&mut self, req: Request) -> Result<()> {
             match req {
@@ -460,6 +454,15 @@ pub mod actor {
 
         fn close(mut self) -> Result<()> {
             self.writer.close_file()
+        }
+    }
+
+    impl AsyncInitContext for WriterContext {
+        type Init = WriterContextConfig;
+        
+        fn init(WriterContextConfig { path, config, sync_interval }: WriterContextConfig) -> Result<WriterContext> {
+            let file = OpenOptions::new().write(true).create_new(true).open(path)?;
+            Ok(WriterContext { writer: Writer::init(file, config)?, non_synced: 0, sync_interval })
         }
     }
 }
