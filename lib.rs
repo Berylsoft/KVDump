@@ -394,3 +394,72 @@ impl<F: Write> Drop for Writer<F> {
 }
 
 // endregion
+
+#[cfg(feature = "actor")]
+pub mod actor {
+    use std::{path::PathBuf, fs::{OpenOptions, File}};
+    use actor_core::*;
+    use crate::*;
+
+    impl From<ClosedError> for Error {
+        fn from(_: ClosedError) -> Self {
+            Error::AsyncFileClosed
+        }
+    }
+
+    #[derive(Debug)]
+    pub enum Request {
+        KV(KV),
+        Hash,
+        Sync,
+    }
+
+    #[derive(Debug)]
+    pub struct WriterContextConfig {
+        path: PathBuf,
+        config: Config,
+        sync_interval: u16,
+    }
+
+    pub struct WriterContext {
+        writer: Writer<File>,
+        non_synced: u16,
+        sync_interval: u16,
+    }
+
+    impl Context for WriterContext {
+        type Init = WriterContextConfig;
+        type Req = Request;
+        type Res = ();
+        type Err = Error;
+
+        fn init(WriterContextConfig { path, config, sync_interval }: WriterContextConfig) -> Result<WriterContext> {
+            let file = OpenOptions::new().write(true).create_new(true).open(path)?;
+            Ok(WriterContext { writer: Writer::init(file, config)?, non_synced: 0, sync_interval })
+        }
+
+        fn exec(&mut self, req: Request) -> Result<()> {
+            match req {
+                Request::KV(kv) => {
+                    self.writer.write_kv(kv)?;
+                    self.non_synced += 1;
+                    if self.non_synced >= self.sync_interval {
+                        self.writer.datasync()?;
+                        self.non_synced = 0;
+                    }
+                },
+                Request::Hash => {
+                    let _ = self.writer.write_hash()?;
+                },
+                Request::Sync => {
+                    self.writer.datasync()?;
+                },
+            }
+            Ok(())
+        }
+
+        fn close(mut self) -> Result<()> {
+            self.writer.close_file()
+        }
+    }
+}

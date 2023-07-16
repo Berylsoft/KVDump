@@ -14,9 +14,7 @@ path = "lib.rs"
 [dependencies]
 blake3 = "1"
 foundations = { git = "https://github.com/Berylsoft/foundations", features = ["num-enum", "usize-casting", "error-enum"] }
+actor-core = { git = "https://github.com/Berylsoft/actor", optional = true }
 
-[workspace]
-resolver = "2"
-members = [
-    "async"
-]
+[features]
+actor = ["actor-core"]
