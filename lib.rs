@@ -154,10 +154,39 @@ const SIZES_FLAG_BASES: SizeFlagBases = SizeFlagBases {
     value: 1 << 2,
 };
 
+pub trait Config: Send + 'static {
+    fn ident<'a>(&'a self) -> &'a [u8];
+
+    fn sizes<'a>(&'a self) -> &'a Sizes;
+
+    fn to_rt(&self) -> RtConfig {
+        #[cfg(not(feature = "bytesbuf"))]
+        let ident = self.ident().into();
+        #[cfg(feature = "bytesbuf")]
+        let ident = Bytes::copy_from_slice(self.ident());
+        let sizes = self.sizes().clone();
+        RtConfig { ident, sizes }
+    }
+}
+
 #[derive(PartialEq, Eq, Debug, Clone)]
-pub struct Config {
+pub struct RtConfig {
     pub ident: Bytes,
     pub sizes: Sizes,
+}
+
+impl Config for RtConfig {
+    fn ident<'a>(&'a self) -> &'a [u8] {
+        &self.ident
+    }
+
+    fn sizes<'a>(&'a self) -> &'a Sizes {
+        &self.sizes
+    }
+    
+    fn to_rt(&self) -> RtConfig {
+        self.clone()
+    }
 }
 
 // endregion
@@ -186,7 +215,7 @@ error_enum! {
     #[derive(Debug)]
     pub enum Error {
         Version { existing: u32 },
-        Config { existing: Config, current: Config },
+        Config { existing: RtConfig, current: RtConfig },
         Hash { existing: Hash, calculated: Hash },
         InputLength { config_len: u32, input_len: u32, which: InputKind },
         RowType(u8),
@@ -206,17 +235,17 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 pub struct Reader<F: Read> {
     inner: F,
-    config: Config,
+    config: RtConfig,
     hasher: Hasher,
 }
 
 impl<F: Read> Reader<F> {
     #[inline]
-    pub fn config(&self) -> &Config {
+    pub fn config(&self) -> &RtConfig {
         &self.config
     }
 
-    fn read_init(inner: &mut F) -> Result<Config> {
+    fn read_init(inner: &mut F) -> Result<RtConfig> {
         let version = inner.read_u32()?;
         check!(version, BS_IDENT, Error::Version { existing: version });
 
@@ -232,7 +261,7 @@ impl<F: Read> Reader<F> {
         skv_op_impl!(scope, key, value,);
         let sizes = Sizes { scope, key, value };
 
-        Ok(Config { ident, sizes })
+        Ok(RtConfig { ident, sizes })
     }
 
     pub fn read_row(&mut self) -> Result<Row> {
@@ -240,7 +269,7 @@ impl<F: Read> Reader<F> {
             RowType::KV => Row::KV({
                 macro_rules! skv_op_impl {
                     ($($x:ident,)*) => {$(
-                        let len = u32_usize(match self.config.sizes.$x {
+                        let len = u32_usize(match self.config.sizes().$x {
                             Some(len) => len,
                             None => self.inner.read_u32()?,
                         });
@@ -283,16 +312,16 @@ impl<F: Read> Iterator for Reader<F> {
 
 // region: writer
 
-pub struct Writer<F: Write> {
+pub struct Writer<F: Write, C: Config> {
     inner: F,
-    config: Config,
+    config: C,
     hasher: Hasher,
     closed: bool,
 }
 
-impl<F: Write> Writer<F> {
+impl<F: Write, C: Config> Writer<F, C> {
     #[inline]
-    pub fn config(&self) -> &Config {
+    pub fn config(&self) -> &C {
         &self.config
     }
 
@@ -305,13 +334,13 @@ impl<F: Write> Writer<F> {
     fn write_init(&mut self) -> Result<()> {
         self.inner.write_u32(BS_IDENT)?;
 
-        self.inner.write_u32(usize_u32(self.config.ident.len())?)?;
-        self.inner.write_bytes(self.config.ident.clone())?;
+        self.inner.write_u32(usize_u32(self.config.ident().len())?)?;
+        self.inner.write_bytes(self.config.ident().clone())?;
 
-        self.inner.write_u8(self.config.sizes.flag())?;
+        self.inner.write_u8(self.config.sizes().flag())?;
         macro_rules! skv_op_impl {
             ($($x:ident,)*) => {$(
-                self.inner.write_u32(self.config.sizes.$x.unwrap_or(0))?;
+                self.inner.write_u32(self.config.sizes().$x.unwrap_or(0))?;
             )*};
         }
         skv_op_impl!(scope, key, value,);
@@ -328,7 +357,7 @@ impl<F: Write> Writer<F> {
         macro_rules! skv_op_impl {
             ($($x:ident,)*) => {$({
                 let input_len = usize_u32(kv.$x.len())?;
-                match self.config.sizes.$x {
+                match self.config.sizes().$x {
                     Some(config_len) => {
                         check!(config_len, input_len, Error::InputLength {
                             config_len,
@@ -376,14 +405,14 @@ impl<F: Write> Writer<F> {
         Ok(())
     }
 
-    pub fn init(inner: F, config: Config) -> Result<Writer<F>> {
+    pub fn init(inner: F, config: C) -> Result<Writer<F, C>> {
         let mut _self = Writer { inner, config, hasher: Hasher::new(), closed: false };
         _self.write_init()?;
         Ok(_self)
     }
 }
 
-impl Writer<std::fs::File> {
+impl<C: Config> Writer<std::fs::File, C> {
     #[inline]
     pub fn fsync(&mut self) -> Result<()> {
         Ok(self.inner.sync_all()?)
@@ -400,7 +429,7 @@ impl Writer<std::fs::File> {
     }
 }
 
-impl<F: Write> Drop for Writer<F> {
+impl<F: Write, C: Config> Drop for Writer<F, C> {
     fn drop(&mut self) {
         if !self.closed {
             self.close().expect("FATAL: Error occurred during closing");
@@ -430,19 +459,17 @@ pub mod actor {
     }
 
     #[derive(Debug)]
-    pub struct WriterContextConfig {
+    pub struct WriterContextConfig<C: Config, const I: u16> {
         pub path: PathBuf,
-        pub config: Config,
-        pub sync_interval: u16,
+        pub config: C,
     }
 
-    pub struct WriterContext {
-        writer: Writer<File>,
+    pub struct WriterContext<C: Config, const I: u16> {
+        writer: Writer<File, C>,
         non_synced: u16,
-        sync_interval: u16,
     }
 
-    impl Context for WriterContext {
+    impl<C: Config, const I: u16> Context for WriterContext<C, I> {
         type Req = Request;
         type Res = ();
         type Err = Error;
@@ -452,7 +479,7 @@ pub mod actor {
                 Request::KV(kv) => {
                     self.writer.write_kv(kv)?;
                     self.non_synced += 1;
-                    if self.non_synced >= self.sync_interval {
+                    if self.non_synced >= I {
                         self.writer.datasync()?;
                         self.non_synced = 0;
                     }
@@ -472,12 +499,12 @@ pub mod actor {
         }
     }
 
-    impl AsyncInitContext for WriterContext {
-        type Init = WriterContextConfig;
+    impl<C: Config, const I: u16> AsyncInitContext for WriterContext<C, I> {
+        type Init = WriterContextConfig<C, I>;
         
-        fn init(WriterContextConfig { path, config, sync_interval }: WriterContextConfig) -> Result<WriterContext> {
+        fn init(WriterContextConfig { path, config }: WriterContextConfig<C, I>) -> Result<WriterContext<C, I>> {
             let file = OpenOptions::new().write(true).create_new(true).open(path)?;
-            Ok(WriterContext { writer: Writer::init(file, config)?, non_synced: 0, sync_interval })
+            Ok(WriterContext { writer: Writer::init(file, config)?, non_synced: 0 })
         }
     }
 }
