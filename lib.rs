@@ -31,18 +31,14 @@ macro_rules! check {
 // region: helper traits
 
 trait ReadExt: Read {
-    #[cfg(not(feature = "bytesbuf"))]
     fn read_bytes(&mut self, len: usize) -> Result<Bytes> {
         let mut buf = vec![0; len];
         self.read_exact(&mut buf)?;
-        Ok(buf.into_boxed_slice())
-    }
-
-    #[cfg(feature = "bytesbuf")]
-    fn read_bytes(&mut self, len: usize) -> Result<Bytes> {
-        let mut buf = bytes::BytesMut::zeroed(len);
-        self.read_exact(&mut buf)?;
-        Ok(buf.freeze())
+        #[cfg(not(feature = "bytesbuf"))]
+        let buf = buf.into_boxed_slice();
+        #[cfg(feature = "bytesbuf")]
+        let buf = buf.into();
+        Ok(buf)
     }
 
     fn read_bytes_sized<const N: usize>(&mut self) -> Result<[u8; N]> {
