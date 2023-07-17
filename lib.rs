@@ -4,6 +4,13 @@ use std::io::{self, Read, Write};
 pub use blake3::{Hasher, OUT_LEN as HASH_LEN};
 use foundations::{num_enum, usize_casting::*, error_enum};
 
+#[cfg(not(feature = "bytesbuf"))]
+type Bytes = Box<[u8]>;
+#[cfg(feature = "bytesbuf")]
+type Bytes = bytes::Bytes;
+#[cfg(feature = "bytesbuf")]
+pub use bytes;
+
 // region: util
 
 pub fn usize_u32(n: usize) -> Result<u32> {
@@ -24,10 +31,18 @@ macro_rules! check {
 // region: helper traits
 
 trait ReadExt: Read {
-    fn read_bytes(&mut self, len: usize) -> Result<Box<[u8]>> {
+    #[cfg(not(feature = "bytesbuf"))]
+    fn read_bytes(&mut self, len: usize) -> Result<Bytes> {
         let mut buf = vec![0; len];
         self.read_exact(&mut buf)?;
         Ok(buf.into_boxed_slice())
+    }
+
+    #[cfg(feature = "bytesbuf")]
+    fn read_bytes(&mut self, len: usize) -> Result<Bytes> {
+        let mut buf = bytes::BytesMut::zeroed(len);
+        self.read_exact(&mut buf)?;
+        Ok(buf.freeze())
     }
 
     fn read_bytes_sized<const N: usize>(&mut self) -> Result<[u8; N]> {
@@ -79,9 +94,9 @@ impl<W: Write> WriteExt for W {}
 
 #[derive(PartialEq, Eq, Debug, Clone)]
 pub struct KV {
-    pub scope: Box<[u8]>,
-    pub key: Box<[u8]>,
-    pub value: Box<[u8]>,
+    pub scope: Bytes,
+    pub key: Bytes,
+    pub value: Bytes,
 }
 
 pub type Hash = [u8; HASH_LEN];
@@ -141,7 +156,7 @@ const SIZES_FLAG_BASES: SizeFlagBases = SizeFlagBases {
 
 #[derive(PartialEq, Eq, Debug, Clone)]
 pub struct Config {
-    pub ident: Box<[u8]>,
+    pub ident: Bytes,
     pub sizes: Sizes,
 }
 
