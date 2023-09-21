@@ -428,7 +428,10 @@ impl<C: Config> Writer<std::fs::File, C> {
 impl<F: Write, C: Config> Drop for Writer<F, C> {
     fn drop(&mut self) {
         if !self.closed {
-            self.close().expect("FATAL: Error occurred during closing");
+            let close_res = self.close();
+            if !std::thread::panicking() {
+                close_res.expect("FATAL: Error occurred during closing");
+            }
         }
     }
 }
