@@ -4,11 +4,11 @@ use std::io::{self, Read, Write};
 pub use blake3::{Hasher, OUT_LEN as HASH_LEN};
 use foundations::{num_enum, usize_casting::*, error_enum};
 
-#[cfg(not(feature = "bytesbuf"))]
+#[cfg(not(feature = "bytes"))]
 type Bytes = Box<[u8]>;
-#[cfg(feature = "bytesbuf")]
+#[cfg(feature = "bytes")]
 type Bytes = bytes::Bytes;
-#[cfg(feature = "bytesbuf")]
+#[cfg(feature = "bytes")]
 pub use bytes;
 
 // region: util
@@ -34,9 +34,9 @@ trait ReadExt: Read {
     fn read_bytes(&mut self, len: usize) -> Result<Bytes> {
         let mut buf = vec![0; len];
         self.read_exact(&mut buf)?;
-        #[cfg(not(feature = "bytesbuf"))]
+        #[cfg(not(feature = "bytes"))]
         let buf = buf.into_boxed_slice();
-        #[cfg(feature = "bytesbuf")]
+        #[cfg(feature = "bytes")]
         let buf = buf.into();
         Ok(buf)
     }
@@ -156,9 +156,9 @@ pub trait Config: Send + 'static {
     fn sizes<'a>(&'a self) -> &'a Sizes;
 
     fn to_rt(&self) -> RtConfig {
-        #[cfg(not(feature = "bytesbuf"))]
+        #[cfg(not(feature = "bytes"))]
         let ident = self.ident().into();
-        #[cfg(feature = "bytesbuf")]
+        #[cfg(feature = "bytes")]
         let ident = Bytes::copy_from_slice(self.ident());
         let sizes = self.sizes().clone();
         RtConfig { ident, sizes }

@@ -19,4 +19,4 @@ actor-core = { git = "https://github.com/Berylsoft/actor", optional = true }
 
 [features]
 actor = ["actor-core"]
-bytesbuf = ["bytes"]
+bytes = ["dep:bytes"]
