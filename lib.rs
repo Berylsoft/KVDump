@@ -331,7 +331,7 @@ impl<F: Write, C: Config> Writer<F, C> {
         self.inner.write_u32(BS_IDENT)?;
 
         self.inner.write_u32(usize_u32(self.config.ident().len())?)?;
-        self.inner.write_bytes(self.config.ident().clone())?;
+        self.inner.write_bytes(self.config.ident())?;
 
         self.inner.write_u8(self.config.sizes().flag())?;
         macro_rules! skv_op_impl {
@@ -472,7 +472,9 @@ pub mod actor {
         type Req = Request;
         type Res = ();
         type Err = Error;
+    }
 
+    impl<C: Config, const I: u16> SyncContext for WriterContext<C, I> {
         fn exec(&mut self, req: Request) -> Result<()> {
             match req {
                 Request::KV(kv) => {
@@ -498,7 +500,7 @@ pub mod actor {
         }
     }
 
-    impl<C: Config, const I: u16> AsyncInitContext for WriterContext<C, I> {
+    impl<C: Config, const I: u16> SyncInitContext for WriterContext<C, I> {
         type Init = WriterContextConfig<C, I>;
         
         fn init(WriterContextConfig { path, config }: WriterContextConfig<C, I>) -> Result<WriterContext<C, I>> {
