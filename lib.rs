@@ -2,7 +2,7 @@ pub const BS_IDENT: u32 = 0x42650000;
 
 use std::io::{self, Read, Write};
 pub use blake3::{Hasher, OUT_LEN as HASH_LEN};
-use foundations::{num_enum, usize_casting::*, error_enum};
+use foundations::{num_enum, error_enum};
 
 #[cfg(not(feature = "bytes"))]
 type Bytes = Box<[u8]>;
@@ -13,11 +13,16 @@ pub use bytes;
 
 // region: util
 
-pub fn usize_u32(n: usize) -> Result<u32> {
-    n.try_into().map_err(|_| Error::TooLongSize { size: usize_u64(n) })
+#[inline]
+fn u32_usize(len: u32) -> Result<usize> {
+    len.try_into().map_err(|_| Error::TooShortMachineSize { len })
 }
 
-#[macro_export]
+#[inline]
+fn usize_u32(len: usize) -> Result<u32> {
+    len.try_into().map_err(|_| Error::TooLongLen { len })
+}
+
 macro_rules! check {
     ($l:expr, $r:expr, $varient:expr) => {
         if $l != $r {
@@ -215,7 +220,8 @@ error_enum! {
         Hash { existing: Hash, calculated: Hash },
         InputLength { config_len: u32, input_len: u32, which: InputKind },
         RowType(u8),
-        TooLongSize { size: u64 },
+        TooLongLen { len: usize },
+        TooShortMachineSize { len: u32 },
         Closed,
         AsyncFileClosed,
     } convert {
@@ -245,7 +251,7 @@ impl<F: Read> Reader<F> {
         let version = inner.read_u32()?;
         check!(version, BS_IDENT, Error::Version { existing: version });
 
-        let ident_len = u32_usize(inner.read_u32()?);
+        let ident_len = u32_usize(inner.read_u32()?)?;
         let ident = inner.read_bytes(ident_len)?;
 
         let sizes_flag = inner.read_u8()?;
@@ -268,7 +274,7 @@ impl<F: Read> Reader<F> {
                         let len = u32_usize(match self.config.sizes().$x {
                             Some(len) => len,
                             None => self.inner.read_u32()?,
-                        });
+                        })?;
                         let $x = self.inner.read_bytes(len)?;
                         self.hasher.update(&$x);
                     )*};
@@ -330,8 +336,10 @@ impl<F: Write, C: Config> Writer<F, C> {
     fn write_init(&mut self) -> Result<()> {
         self.inner.write_u32(BS_IDENT)?;
 
-        self.inner.write_u32(usize_u32(self.config.ident().len())?)?;
-        self.inner.write_bytes(self.config.ident())?;
+        let ident = self.config.ident();
+        let ident_len = usize_u32(ident.len())?;
+        self.inner.write_u32(ident_len)?;
+        self.inner.write_bytes(ident)?;
 
         self.inner.write_u8(self.config.sizes().flag())?;
         macro_rules! skv_op_impl {
