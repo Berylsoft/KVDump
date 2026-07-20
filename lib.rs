@@ -222,7 +222,7 @@ error_enum! {
         RowType(u8),
         TooLongLen { len: usize },
         TooShortMachineSize { len: u32 },
-        Closed,
+        Ended,
         AsyncFileClosed,
     } convert {
         Io => io::Error,
@@ -239,7 +239,7 @@ pub struct Reader<F: Read> {
     inner: F,
     config: RtConfig,
     hasher: Hasher,
-    closed: bool,
+    ended: bool,
 }
 
 impl<F: Read> Reader<F> {
@@ -249,8 +249,8 @@ impl<F: Read> Reader<F> {
     }
 
     #[inline]
-    fn close_guard(&self) -> Result<()> {
-        check!(self.closed, false, Error::Closed);
+    fn end_guard(&self) -> Result<()> {
+        check!(self.ended, false, Error::Ended);
         Ok(())
     }
 
@@ -274,7 +274,7 @@ impl<F: Read> Reader<F> {
     }
 
     pub fn read_row(&mut self) -> Result<Row> {
-        self.close_guard()?;
+        self.end_guard()?;
 
         Ok(match self.inner.read_u8()?.try_into()? {
             RowType::KV => Row::KV({
@@ -298,7 +298,7 @@ impl<F: Read> Reader<F> {
                 calculated
             }),
             RowType::End => {
-                self.closed = true;
+                self.ended = true;
                 Row::End
             },
         })
@@ -306,7 +306,7 @@ impl<F: Read> Reader<F> {
 
     pub fn init(mut inner: F) -> Result<Reader<F>> {
         let config = Reader::read_init(&mut inner)?;
-        Ok(Reader { inner, config, hasher: Hasher::new(), closed: false })
+        Ok(Reader { inner, config, hasher: Hasher::new(), ended: false })
     }
 }
 
@@ -329,7 +329,7 @@ pub struct Writer<F: Write, C: Config> {
     inner: F,
     config: C,
     hasher: Hasher,
-    closed: bool,
+    ended: bool,
 }
 
 impl<F: Write, C: Config> Writer<F, C> {
@@ -339,8 +339,8 @@ impl<F: Write, C: Config> Writer<F, C> {
     }
 
     #[inline]
-    fn close_guard(&self) -> Result<()> {
-        check!(self.closed, false, Error::Closed);
+    fn end_guard(&self) -> Result<()> {
+        check!(self.ended, false, Error::Ended);
         Ok(())
     }
 
@@ -365,7 +365,7 @@ impl<F: Write, C: Config> Writer<F, C> {
     }
 
     pub fn write_kv(&mut self, kv: KV) -> Result<()> {
-        self.close_guard()?;
+        self.end_guard()?;
         
         self.inner.write_u8(RowType::KV as u8)?;
 
@@ -393,7 +393,7 @@ impl<F: Write, C: Config> Writer<F, C> {
     }
 
     pub fn write_hash(&mut self) -> Result<Hash> {
-        self.close_guard()?;
+        self.end_guard()?;
 
         self.inner.write_u8(RowType::Hash as u8)?;
 
@@ -411,17 +411,17 @@ impl<F: Write, C: Config> Writer<F, C> {
         Ok(())
     }
 
-    pub fn close(&mut self) -> Result<()> {
-        if !self.closed {
+    pub fn end(&mut self) -> Result<()> {
+        if !self.ended {
             self.write_hash()?;
             self.write_end()?;
-            self.closed = true;
+            self.ended = true;
         }
         Ok(())
     }
 
     pub fn init(inner: F, config: C) -> Result<Writer<F, C>> {
-        let mut _self = Writer { inner, config, hasher: Hasher::new(), closed: false };
+        let mut _self = Writer { inner, config, hasher: Hasher::new(), ended: false };
         _self.write_init()?;
         Ok(_self)
     }
@@ -438,7 +438,7 @@ impl<C: Config> Writer<std::fs::File, C> {
     }
 
     pub fn close_file(&mut self) -> Result<()> {
-        self.close()?;
+        self.end()?;
         self.fsync()?;
         Ok(())
     }
@@ -446,8 +446,8 @@ impl<C: Config> Writer<std::fs::File, C> {
 
 impl<F: Write, C: Config> Drop for Writer<F, C> {
     fn drop(&mut self) {
-        if !self.closed {
-            let close_res = self.close();
+        if !self.ended {
+            let close_res = self.end();
             if !std::thread::panicking() {
                 close_res.expect("FATAL: Error occurred during closing");
             }
@@ -563,7 +563,7 @@ mod tests {
             value: b!(b"value2"),
         }).unwrap();
         writer.write_hash().unwrap();
-        writer.close().unwrap();
+        writer.end().unwrap();
         drop(writer);
 
         let data = buffer.into_inner();
