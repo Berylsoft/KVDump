@@ -239,12 +239,19 @@ pub struct Reader<F: Read> {
     inner: F,
     config: RtConfig,
     hasher: Hasher,
+    closed: bool,
 }
 
 impl<F: Read> Reader<F> {
     #[inline]
     pub fn config(&self) -> &RtConfig {
         &self.config
+    }
+
+    #[inline]
+    fn close_guard(&self) -> Result<()> {
+        check!(self.closed, false, Error::Closed);
+        Ok(())
     }
 
     fn read_init(inner: &mut F) -> Result<RtConfig> {
@@ -267,6 +274,8 @@ impl<F: Read> Reader<F> {
     }
 
     pub fn read_row(&mut self) -> Result<Row> {
+        self.close_guard()?;
+
         Ok(match self.inner.read_u8()?.try_into()? {
             RowType::KV => Row::KV({
                 macro_rules! skv_op_impl {
@@ -288,13 +297,16 @@ impl<F: Read> Reader<F> {
                 check!(existing, calculated, Error::Hash { existing, calculated });
                 calculated
             }),
-            RowType::End => Row::End,
+            RowType::End => {
+                self.closed = true;
+                Row::End
+            },
         })
     }
 
     pub fn init(mut inner: F) -> Result<Reader<F>> {
         let config = Reader::read_init(&mut inner)?;
-        Ok(Reader { inner, config, hasher: Hasher::new() })
+        Ok(Reader { inner, config, hasher: Hasher::new(), closed: false })
     }
 }
 
