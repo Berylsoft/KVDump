@@ -2,7 +2,7 @@ pub const BS_IDENT: u32 = 0x42650000;
 
 use std::io::{self, Read, Write};
 pub use blake3::{Hasher, OUT_LEN as HASH_LEN};
-use foundations::{num_enum, error_enum};
+use foundations::{num_enum_reverse, error_enum};
 
 #[cfg(not(feature = "bytes"))]
 type Bytes = Box<[u8]>;
@@ -102,11 +102,11 @@ pub struct KV {
 
 pub type Hash = [u8; HASH_LEN];
 
-num_enum! {
+num_enum_reverse! {
     pub enum RowType {
-        KV   = 0,
-        Hash = 1,
-        End  = 2,
+        0 = KV,
+        1 = Hash,
+        2 = End,
     } as u8 else Error::RowType
 }
 
@@ -286,7 +286,6 @@ impl<F: Read> Reader<F> {
                 let existing = self.inner.read_hash()?;
                 let calculated = *self.hasher.finalize().as_bytes();
                 check!(existing, calculated, Error::Hash { existing, calculated });
-                self.hasher.reset();
                 calculated
             }),
             RowType::End => Row::End,
@@ -515,5 +514,51 @@ pub mod actor {
             let file = OpenOptions::new().write(true).create_new(true).open(path)?;
             Ok(WriterContext { writer: Writer::init(file, config)?, non_synced: 0 })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::*;
+    use std::io::Cursor;
+
+    macro_rules! b {
+        ($b:expr) => {
+            Bytes::from_static($b)
+        };
+    }
+
+    #[test]
+    fn hash() {
+        let config = RtConfig {
+            ident: b!(b"test"),
+            sizes: Sizes { scope: None, key: None, value: None },
+        };
+
+        let mut buffer = Cursor::new(Vec::new());
+        let mut writer = Writer::init(&mut buffer, config).unwrap();
+
+        writer.write_kv(KV {
+            scope: b!(b"scope1"),
+            key: b!(b"key1"),
+            value: b!(b"value1"),
+        }).unwrap();
+        writer.write_hash().unwrap();
+
+        writer.write_kv(KV {
+            scope: b!(b"scope2"),
+            key: b!(b"key2"),
+            value: b!(b"value2"),
+        }).unwrap();
+        writer.write_hash().unwrap();
+        writer.close().unwrap();
+        drop(writer);
+
+        let data = buffer.into_inner();
+        let reader = Reader::init(Cursor::new(data)).unwrap();
+        let result: Result<Vec<Row>> = reader.collect();
+
+        assert!(result.is_ok());
+        // dbg!(&result);
     }
 }
