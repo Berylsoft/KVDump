@@ -156,9 +156,9 @@ const SIZES_FLAG_BASES: SizeFlagBases = SizeFlagBases {
 };
 
 pub trait Config: Send + 'static {
-    fn ident<'a>(&'a self) -> &'a [u8];
+    fn ident(&self) -> &[u8];
 
-    fn sizes<'a>(&'a self) -> &'a Sizes;
+    fn sizes(&self) -> &Sizes;
 
     fn to_rt(&self) -> RtConfig {
         #[cfg(not(feature = "bytes"))]
@@ -177,11 +177,11 @@ pub struct RtConfig {
 }
 
 impl Config for RtConfig {
-    fn ident<'a>(&'a self) -> &'a [u8] {
+    fn ident(&self) -> &[u8] {
         &self.ident
     }
 
-    fn sizes<'a>(&'a self) -> &'a Sizes {
+    fn sizes(&self) -> &Sizes {
         &self.sizes
     }
     
