@@ -534,6 +534,14 @@ mod tests {
     use crate::*;
     use std::io::Cursor;
 
+    #[cfg(not(feature = "bytes"))]
+    macro_rules! b {
+        ($b:expr) => {
+            $b.as_slice().into()
+        };
+    }
+
+    #[cfg(feature = "bytes")]
     macro_rules! b {
         ($b:expr) => {
             Bytes::from_static($b)
